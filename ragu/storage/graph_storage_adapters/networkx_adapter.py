@@ -271,7 +271,7 @@ class NetworkXStorage(BaseGraphStorage):
         """
         entities: List[Entity] = []
         for node_id in self._graph.nodes():
-            entity = self._entity_from_node(node_id, dict(self._graph[node_id]))
+            entity = self._entity_from_node(node_id, dict(self._graph.nodes[node_id]))
             entities.append(entity)
         return entities
 

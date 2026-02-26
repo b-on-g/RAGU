@@ -184,7 +184,6 @@ class ResponseCachingMixin:
 
         return response
 
-    @abstractmethod
     async def _uncached_score(
         self,
         model_name: str,

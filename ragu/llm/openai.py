@@ -61,6 +61,9 @@ class CachedAsyncOpenAI(ResponseCachingMixin):
     raise it. In rate limiting, each retrying attempt is considered
     a new request.
 
+    NOTE: This class sets max_retries=0 in AsyncOpenAI, because
+    it uses its own `retry_times_sec` mechanism. TODO is this ok?
+
     So, these mechanisms are independent: rate limiting delays
     requests, and retrying handles exceptions.
 
@@ -86,6 +89,7 @@ class CachedAsyncOpenAI(ResponseCachingMixin):
         self.client = client or AsyncOpenAI(
             base_url=base_url,
             api_key=api_key,
+            max_retries=0,
         )
 
         # saving successuful responses

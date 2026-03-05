@@ -47,6 +47,7 @@ class BuilderArguments:
     remove_isolated_nodes: bool = True
     vectorize_chunks: bool = False
     cluster_only_if_more_than: int = 10000
+    summarize_only_if_more_than: int = 7
     max_cluster_size: int = 128
     random_seed: int = 42
 
@@ -137,12 +138,14 @@ class InMemoryGraphBuilder:
                 use_llm_summarization=self.build_parameters.use_llm_summarization,
                 use_clustering=self.build_parameters.use_clustering,
                 cluster_only_if_more_than=self.build_parameters.cluster_only_if_more_than,
+                summarize_only_if_more_than=self.build_parameters.summarize_only_if_more_than,
                 embedder=embedder,
                 language=self.language,
             )
             self.relation_summarizer = RelationSummarizer(
                 llm,
                 use_llm_summarization=self.build_parameters.use_llm_summarization,
+                summarize_only_if_more_than=self.build_parameters.summarize_only_if_more_than,
                 language=self.language
             )
             self.community_summarizer = CommunitySummarizer(self.llm, language=self.language)

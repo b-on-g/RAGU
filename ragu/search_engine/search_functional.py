@@ -19,8 +19,22 @@ async def _find_most_related_edges_from_entities(entities: list[Entity], knowled
     if not all_related_edges:
         return []
 
-    all_edges_data = []
+    seen_relations = set()
+    unique_edges = []
     for edge in all_related_edges:
+        dedup_key = edge.id or (
+            edge.subject_id,
+            edge.object_id,
+            edge.relation_type,
+            edge.description,
+        )
+        if dedup_key in seen_relations:
+            continue
+        seen_relations.add(dedup_key)
+        unique_edges.append(edge)
+
+    all_edges_data = []
+    for edge in unique_edges:
         edge_data = asdict(edge)
         all_edges_data.append(edge_data)
 
@@ -37,13 +51,24 @@ async def _find_most_related_text_unit_from_entities(
         entities: List[Entity],
         knowledge_graph: KnowledgeGraph
 ):
-    chunks_id = [entity.source_chunk_id for entity in entities]
+    seed_entities = [entity for entity in entities if entity and entity.id]
+    if not seed_entities:
+        return []
 
-    edges = await knowledge_graph.index.graph_backend.get_all_edges_for_nodes([e.id for e in entities])
+    chunks_id = [entity.source_chunk_id for entity in seed_entities]
+    seed_ids = [entity.id for entity in seed_entities]
 
-    grouped_relations = await knowledge_graph.index.graph_backend.get_all_edges_for_nodes([e.id for e in entities])
-    relations = [relation for group in grouped_relations for relation in group if relation]
-    neighbor_ids = list(set([relation.object_id for relation in relations]))
+    grouped_relations = await knowledge_graph.index.graph_backend.get_all_edges_for_nodes(seed_ids)
+    neighbor_ids: List[str] = []
+    for seed_id, relations_group in zip(seed_ids, grouped_relations):
+        for relation in relations_group:
+            if relation is None:
+                continue
+            if relation.subject_id == seed_id:
+                neighbor_ids.append(relation.object_id)
+            elif relation.object_id == seed_id:
+                neighbor_ids.append(relation.subject_id)
+    neighbor_ids = list(dict.fromkeys(neighbor_ids))
     neighbors = await knowledge_graph.index.get_entities(neighbor_ids)
 
     all_one_hop_text_units_lookup = {
@@ -51,15 +76,21 @@ async def _find_most_related_text_unit_from_entities(
     }
 
     all_text_units_lookup = {}
-    for index, (this_text_units, this_edges) in enumerate(zip(chunks_id, edges)):
+    for index, (seed_id, this_text_units, this_edges) in enumerate(zip(seed_ids, chunks_id, grouped_relations)):
         for c_id in this_text_units:
             if c_id in all_text_units_lookup:
                 continue
             relation_counts = 0
             for e in this_edges:
+                if e.subject_id == seed_id:
+                    neighbor_id = e.object_id
+                elif e.object_id == seed_id:
+                    neighbor_id = e.subject_id
+                else:
+                    continue
                 if (
-                        e.object_id in all_one_hop_text_units_lookup
-                        and c_id in all_one_hop_text_units_lookup[e.object_id]
+                        neighbor_id in all_one_hop_text_units_lookup
+                        and c_id in all_one_hop_text_units_lookup[neighbor_id]
                 ):
                     relation_counts += 1
             all_text_units_lookup[c_id] = {

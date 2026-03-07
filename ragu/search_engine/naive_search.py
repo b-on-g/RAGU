@@ -85,6 +85,7 @@ class NaiveSearchEngine(BaseEngine):
         vectorized_query = await self.embedder.embed_text(query)
         results = await self.graph.index.chunk_vector_db.query(
             Embedding(vector=vectorized_query),
+            top_k=top_k
         )
 
         if not results:

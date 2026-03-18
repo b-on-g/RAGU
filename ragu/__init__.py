@@ -6,6 +6,7 @@ from ragu.chunker import SimpleChunker, SmartSemanticChunker
 # Knowledge Graph and builders
 from ragu.graph.knowledge_graph import KnowledgeGraph
 from ragu.graph.graph_builder_pipeline import InMemoryGraphBuilder, BuilderArguments
+from ragu.graph.index import StorageArguments
 
 # Global settings
 from ragu.common.env import Env
@@ -26,9 +27,6 @@ from ragu.triplet import (
     TwoStageArtifactsExtractorLLM,
     RaguLmArtifactExtractor
 )
-
-# Storage arguments
-from ragu.storage.index import StorageArguments
 
 
 __all__ = [

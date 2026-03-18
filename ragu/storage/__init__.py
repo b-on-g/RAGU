@@ -1,8 +1,8 @@
-from ragu.storage.index import StorageArguments
-from ragu.storage.types import Embedding, EmbeddingHit
+from ragu.storage.types import Edge, Embedding, EmbeddingHit, Node
 
 __all__ = [
-    'StorageArguments',
+    'Node',
+    'Edge',
     'Embedding',
     'EmbeddingHit',
 ]

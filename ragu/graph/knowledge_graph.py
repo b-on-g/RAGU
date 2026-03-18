@@ -15,7 +15,7 @@ from ragu.graph.graph_builder_pipeline import (
 from ragu.graph.types import Entity, Relation, CommunitySummary
 from ragu.models.embedder import Embedder
 from ragu.models.llm import LLM
-from ragu.storage.index import Index, StorageArguments
+from ragu.graph.index import Index, StorageArguments
 from ragu.triplet.base_artifact_extractor import BaseArtifactExtractor
 from ragu.storage.base_storage import EdgeSpec
 
@@ -37,7 +37,7 @@ class KnowledgeGraph:
     def __init__(
         self,
         llm: Optional[LLM],
-        embedder: Embedder,  # cannote be none, because is passed into Index
+        embedder: Embedder,
         chunker: Optional[BaseChunker] = None,
         artifact_extractor: Optional[BaseArtifactExtractor] = None,
         builder_settings: Optional[BuilderArguments] = None,
@@ -48,7 +48,7 @@ class KnowledgeGraph:
         """
         Initialize KnowledgeGraph with pipeline and storage components.
 
-        :param client: LLM client used by extraction and summarization modules.
+        :param llm: LLM client used by extraction and summarization modules.
         :param embedder: Embedder used by vector storage and optional clustering.
         :param chunker: Optional chunker used to split input documents.
         :param artifact_extractor: Optional entity/relation extractor.

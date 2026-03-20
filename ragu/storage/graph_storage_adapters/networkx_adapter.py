@@ -258,6 +258,7 @@ class NetworkXStorage(BaseGraphStorage[NodeT, EdgeT]):
                 continue
 
             for u, v, key, metadata in self._iter_incident_edges(node_id):
+                _ = metadata.pop("id", None)
                 relation = self._edge_cls(subject_id=str(u), object_id=str(v), id=key, **metadata)
                 node_relations.append(relation)
 
@@ -291,6 +292,7 @@ class NetworkXStorage(BaseGraphStorage[NodeT, EdgeT]):
         relations: List[EdgeT] = []
 
         for u, v, key, metadata in self._graph.edges(keys=True, data=True):
+            _ = metadata.pop("id", None)
             relation = self._edge_cls(subject_id=str(u), object_id=str(v), id=key, **metadata)
             relations.append(relation)
 

@@ -384,7 +384,7 @@ class CachedAsyncOpenAI(ResponseCachingMixin):
 
         async with httpx.AsyncClient(timeout=60) as http_client:   # TODO move to args
             response = await http_client.post(
-                f"{self.client.base_url!s}/score",
+                f"{self.client.base_url!s}score",
                 headers=headers,
                 json=payload,
             )

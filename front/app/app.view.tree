@@ -1,0 +1,94 @@
+$bog_RAGU_front_app $giper_bot
+	dialog_title @ \RAGU
+	api_url \http://localhost:8100
+	history? /
+	doc_text? \
+	doc_files? /
+	index_message? \
+	index_records? /
+	config_message? \
+	llm_api_key? \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
+	llm_base_url? \https://models.github.ai/inference
+	llm_model? \openai/gpt-4.1-mini
+	llm_rpm? \60
+	embedder_api_key? \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
+	embedder_base_url? \https://models.github.ai/inference
+	embedder_model? \text-embedding-3-large
+	embedder_dim? \3072
+	Doc_file* $mol_row
+		sub /
+			<= Doc_file_icon* $mol_icon_file
+			<= Doc_file_name* $mol_view
+				sub /
+					<= doc_file_name* \
+			<= Doc_file_remove* $mol_button_minor
+				click? <=> doc_file_remove*? null
+				sub /
+					<= Doc_file_remove_icon* $mol_icon_close
+	Index_record* $mol_row
+		sub /
+			<= Index_record_icon* $mol_icon_check
+			<= Index_record_info* $mol_view
+				sub /
+					<= index_record_text* \
+	Documents $mol_page
+		title @ \Documents
+		body /
+			<= Doc_text $mol_textarea
+				hint @ \Paste text to build knowledge graph...
+				value? <=> doc_text?
+			<= Doc_open $mol_button_open
+				title @ \Add Files
+				accept \.txt,.md,.csv,.json,.xml,.html,.docx
+				files? <=> doc_files_add? null
+			<= Doc_file_list $mol_list
+				rows <= doc_file_rows /
+			<= Index_submit $mol_button_major
+				title @ \Build Knowledge Graph
+				click? <=> index_submit? null
+			<= Index_message $mol_text
+				text <= index_message?
+			<= Index_record_list $mol_list
+				rows <= index_record_rows /
+	Settings_page $mol_page
+		title @ \Settings
+		body /
+			<= Llm_api_key $mol_form_field
+				name @ \LLM API Key
+				Content <= Llm_api_key_input $mol_string
+					hint \sk-...
+					value? <=> llm_api_key?
+			<= Llm_base_url $mol_form_field
+				name @ \LLM Base URL
+				Content <= Llm_base_url_input $mol_string
+					value? <=> llm_base_url?
+			<= Llm_model $mol_form_field
+				name @ \LLM Model
+				Content <= Llm_model_input $mol_string
+					value? <=> llm_model?
+			<= Llm_rpm $mol_form_field
+				name @ \LLM RPM
+				Content <= Llm_rpm_input $mol_string
+					value? <=> llm_rpm?
+			<= Embedder_api_key $mol_form_field
+				name @ \Embedder API Key
+				Content <= Embedder_api_key_input $mol_string
+					hint \sk-...
+					value? <=> embedder_api_key?
+			<= Embedder_base_url $mol_form_field
+				name @ \Embedder Base URL
+				Content <= Embedder_base_url_input $mol_string
+					value? <=> embedder_base_url?
+			<= Embedder_model $mol_form_field
+				name @ \Embedder Model
+				Content <= Embedder_model_input $mol_string
+					value? <=> embedder_model?
+			<= Embedder_dim $mol_form_field
+				name @ \Embedder Dim
+				Content <= Embedder_dim_input $mol_string
+					value? <=> embedder_dim?
+			<= Config_save $mol_button_major
+				title @ \Save
+				click? <=> config_save? null
+			<= Config_message $mol_text
+				text <= config_message?

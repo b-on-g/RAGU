@@ -1,0 +1,43 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: frontend
+    ports:
+      - "9081:9080"
+    restart: unless-stopped
+    tty: true
+    stdin_open: true
+    develop:
+      watch:
+        - action: sync
+          path: ./front
+          target: /app/bog/RAGU/front
+
+    # http://localhost:9081/bog/RAGU/front/app/-/test.html
+
+  api:
+    platform: linux/arm64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    ports:
+      - "8100:8000"
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NUMBA_CPU_NAME=generic
+    volumes:
+      - ragu_data:/app/ragu_data
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./server
+          target: /app/server
+
+    # http://localhost:8100/api/status
+
+volumes:
+  ragu_data:

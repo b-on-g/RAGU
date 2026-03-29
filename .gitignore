@@ -1,3 +1,7 @@
+# $mol
+-*
+.DS_Store
+
 checkpoints/
 benchmark/*.json
 ragu_working_dir/

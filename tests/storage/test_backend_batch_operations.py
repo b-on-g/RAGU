@@ -13,7 +13,11 @@ from ragu.storage.kv_storage_adapters.json_storage import JsonKVStorage
 def temp_graph_storage(tmp_path):
     """Create a temporary graph storage."""
     storage_file = tmp_path / "test_graph.gml"
-    return NetworkXStorage(filename=str(storage_file))
+    return NetworkXStorage(
+        filename=str(storage_file),
+        node_cls=Entity,
+        edge_cls=Relation,
+    )
 
 
 @pytest.fixture
@@ -261,29 +265,29 @@ async def test_kv_delete(tmp_path):
 @pytest.mark.asyncio
 async def test_vdb_delete(tmp_path):
     """Test vector DB delete operation."""
-    from ragu.embedder.openai_embedder import OpenAIEmbedder
-    from unittest.mock import AsyncMock
+    from ragu.storage.types import Embedding
 
-    # Create mock embedder
-    embedder = AsyncMock(spec=OpenAIEmbedder)
-    embedder.dim = 128
-    embedder.return_value = [[0.1] * 128, [0.2] * 128]
-
+    dim = 128
     storage_file = tmp_path / "test_vdb.json"
-    vdb = NanoVectorDBStorage(embedder=embedder, filename=str(storage_file))
+    vdb = NanoVectorDBStorage(embedding_dim=dim, filename=str(storage_file), cosine_threshold=0.0)
 
     # Insert data
-    await vdb.upsert({"id1": {"content": "test1"}, "id2": {"content": "test2"}})
+    embeddings = [
+        Embedding(id="id1", vector=[0.1] * dim, metadata={"content": "test1"}),
+        Embedding(id="id2", vector=[0.2] * dim, metadata={"content": "test2"}),
+    ]
+    await vdb.upsert(embeddings)
 
     # Get initial count
-    initial_results = await vdb.query("test", top_k=10)
+    query_emb = Embedding(vector=[0.15] * dim)
+    initial_results = await vdb.query(query_emb, top_k=10)
     assert len(initial_results) == 2
 
     # Delete id1
     await vdb.delete(["id1"])
 
     # Verify by querying
-    remaining_results = await vdb.query("test", top_k=10)
-    remaining_ids = [r["id"] for r in remaining_results]
+    remaining_results = await vdb.query(query_emb, top_k=10)
+    remaining_ids = [r.id for r in remaining_results]
     assert "id1" not in remaining_ids
     assert "id2" in remaining_ids

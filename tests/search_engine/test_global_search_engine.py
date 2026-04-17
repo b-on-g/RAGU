@@ -9,7 +9,7 @@ from ragu.search_engine.types import GlobalSearchResult
 
 @pytest.mark.asyncio
 async def test_global_search_filters_and_sorts_by_rating(monkeypatch, real_kg):
-    engine = GlobalSearchEngine(client=SimpleNamespace(generate=AsyncMock()), knowledge_graph=real_kg)
+    engine = GlobalSearchEngine(llm=SimpleNamespace(chat_completion=AsyncMock()), knowledge_graph=real_kg)
 
     monkeypatch.setattr(
         engine,
@@ -30,8 +30,8 @@ async def test_global_search_filters_and_sorts_by_rating(monkeypatch, real_kg):
 
 @pytest.mark.asyncio
 async def test_global_query_returns_llm_response(monkeypatch, real_kg):
-    client = SimpleNamespace(generate=AsyncMock(return_value=[SimpleNamespace(response="global-answer")]))
-    engine = GlobalSearchEngine(client=client, knowledge_graph=real_kg)
+    llm = SimpleNamespace(chat_completion=AsyncMock(return_value="global-answer"))
+    engine = GlobalSearchEngine(llm=llm, knowledge_graph=real_kg)
     engine.truncation = lambda s: s
     engine.a_search = AsyncMock(return_value=GlobalSearchResult(insights=[{"response": "x", "rating": "1"}]))
 
@@ -39,7 +39,7 @@ async def test_global_query_returns_llm_response(monkeypatch, real_kg):
     monkeypatch.setattr(
         global_module,
         "render",
-        lambda messages, **kwargs: [[{"role": "user", "content": "prompt"}]],
+        lambda messages, **kwargs: [SimpleNamespace(to_openai=lambda: [{"role": "user", "content": "prompt"}])],
     )
     monkeypatch.setattr(
         engine,

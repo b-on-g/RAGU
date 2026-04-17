@@ -1,10 +1,8 @@
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
-from typing import Union, Generic, TypeVar, List, Set, Optional, Tuple, Dict
+from typing import Dict, Generic, Iterable, List, Optional, Set, Tuple, TypeVar, Union
 
-import numpy as np
-
-from ragu.graph.types import Entity, Relation
+from ragu.storage.types import Edge, Embedding, EmbeddingHit, Node
 
 EdgeSpec = Tuple[str, str, Optional[str]]
 
@@ -44,22 +42,22 @@ class BaseVectorStorage(BaseStorage, ABC):
     """
 
     @abstractmethod
-    async def query(self, query: str, top_k: int) -> List[Dict]:
+    async def query(self, vector: Embedding, top_k: int) -> List[EmbeddingHit]:
         """
-        Retrieve top-k nearest items for the query text.
+        Retrieve top-k nearest items for a batch of embedding vectors.
 
-        :param query: Input text query.
-        :param top_k: Maximum number of results to return.
-        :return: Vector store specific result payloads.
+        :param vector: Query embedding vector.
+        :param top_k: Maximum number of results to return per query vector.
+        :return: A list of query hits with distance score and metadata.
         """
         ...
 
     @abstractmethod
-    async def upsert(self, data: Dict[str, np.ndarray]):
+    async def upsert(self, data: List[Embedding]) -> None:
         """
-        Insert or update vectorized records.
+        Insert or update embedding records.
 
-        :param data: Mapping from record ID to record payload.
+        :param data: Embedding records to upsert.
         """
         ...
 
@@ -146,11 +144,15 @@ class BaseKVStorage(Generic[T], BaseStorage, ABC):
         """
         ...
 
+NodeT = TypeVar("NodeT", bound=Node)
+EdgeT = TypeVar("EdgeT", bound=Edge)
 
 @dataclass
-class BaseGraphStorage(BaseStorage, ABC):
+class BaseGraphStorage(Generic[NodeT, EdgeT], BaseStorage, ABC):
     """
     Abstract interface for multigraph storage backends.
+
+    RAGU assumes that every graph implementation is a directed multigraph.
     """
 
     @abstractmethod
@@ -165,21 +167,21 @@ class BaseGraphStorage(BaseStorage, ABC):
 
 
     @abstractmethod
-    async def get_nodes(self, node_ids: List[str]) -> List[Optional[Entity]]:
+    async def get_nodes(self, node_ids: List[str]) -> List[Optional[NodeT]]:
         """
         Fetch nodes by IDs.
 
         :param node_ids: Node IDs to retrieve.
-        :return: Entities aligned with input IDs; missing IDs mapped to ``None``.
+        :return: Nodes aligned with input IDs; missing IDs mapped to ``None``.
         """
         ...
 
     @abstractmethod
-    async def upsert_nodes(self, nodes: List[Entity]) -> None:
+    async def upsert_nodes(self, nodes: Iterable[NodeT]) -> None:
         """
         Insert or update nodes.
 
-        :param nodes: Entity nodes to upsert.
+        :param nodes: Nodes to upsert.
         """
         ...
 
@@ -193,21 +195,21 @@ class BaseGraphStorage(BaseStorage, ABC):
         ...
 
     @abstractmethod
-    async def get_edges(self, edge_specs: List[EdgeSpec]) -> List[Optional[Relation]]:
+    async def get_edges(self, edge_specs: List[EdgeSpec]) -> List[Optional[EdgeT]]:
         """
         Fetch edges by specifications.
 
         :param edge_specs: Tuples ``(subject_id, object_id, relation_id)``.
-        :return: Relations aligned with input specs; missing specs mapped to ``None``.
+        :return: Edges aligned with input specs; missing specs mapped to ``None``.
         """
         ...
 
     @abstractmethod
-    async def upsert_edges(self, edges: List[Relation]) -> None:
+    async def upsert_edges(self, edges: Iterable[EdgeT]) -> None:
         """
         Insert or update edges.
 
-        :param edges: Relations to upsert.
+        :param edges: Edges to upsert.
         """
         ...
 
@@ -221,7 +223,7 @@ class BaseGraphStorage(BaseStorage, ABC):
         ...
 
     @abstractmethod
-    async def get_all_edges_for_nodes(self, node_ids: List[str]) -> List[List[Relation]]:
+    async def get_all_edges_for_nodes(self, node_ids: List[str]) -> List[List[EdgeT]]:
         """
         Fetch all incident edges for each provided node.
 
@@ -231,19 +233,19 @@ class BaseGraphStorage(BaseStorage, ABC):
         ...
 
     @abstractmethod
-    async def get_all_nodes(self) -> List[Entity]:
+    async def get_all_nodes(self) -> List[NodeT]:
         """
         Fetch all nodes stored in the backend.
 
-        :return: List of entities.
+        :return: List of nodes.
         """
         ...
 
     @abstractmethod
-    async def get_all_edges(self) -> List[Relation]:
+    async def get_all_edges(self) -> List[EdgeT]:
         """
         Fetch all edges stored in the backend.
 
-        :return: List of relations.
+        :return: List of edges.
         """
         ...

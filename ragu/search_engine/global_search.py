@@ -1,12 +1,12 @@
 import asyncio
-from typing import List
+from typing import Any, List
 
 from pydantic import BaseModel
 
 from ragu.common.base import RaguGenerativeModule
 from ragu.common.global_parameters import Settings
 from ragu.graph.knowledge_graph import KnowledgeGraph
-from ragu.llm.base_llm import BaseLLM
+from ragu.models.llm import LLM
 from ragu.search_engine.base_engine import BaseEngine
 from ragu.search_engine.types import GlobalSearchResult
 from ragu.utils.token_truncation import TokenTruncation
@@ -26,14 +26,14 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
 
     def __init__(
         self,
-        client: BaseLLM,
+        llm: LLM,
         knowledge_graph: KnowledgeGraph,
         max_context_length: int = 30_000,
         tokenizer_backend: str = "tiktoken",
         tokenizer_model: str = "gpt-4",
         language: str | None = None,
-        *args,
-        **kwargs,
+        *args: Any,
+        **kwargs: Any,
     ):
         """
         Initialize a new `GlobalSearchEngine`.
@@ -45,9 +45,9 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
         :param tokenizer_model: Model name for tokenizer calibration (default: ``"gpt-4"``).
         """
         _PROMPTS = ["global_search_context", "global_search"]
-        super().__init__(client=client, prompts=_PROMPTS, *args, **kwargs)
+        super().__init__(llm=llm, prompts=_PROMPTS, *args, **kwargs)
 
-        self.client = client
+        self.llm = llm
         self.knowledge_graph = knowledge_graph
         self.language = language if language else Settings.language
 
@@ -101,14 +101,17 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
             language=self.language,
         )
 
-        meta_responses = await self.client.generate(
-            conversations=rendered_list,
-            response_model=instruction.pydantic_model,
-        )
+        meta_responses = await asyncio.gather(*[
+            self.llm.chat_completion(
+                conversation=rendered.to_openai(),
+                output_schema=instruction.pydantic_model or str, # type: ignore
+            )
+            for rendered in rendered_list
+        ]) # type: ignore
 
         return [r.model_dump() for r in meta_responses if r]
 
-    async def a_query(self, query: str) -> str:
+    async def a_query(self, query: str) -> str | BaseModel:
         """
         Execute a full global retrieval-augmented generation query.
 
@@ -116,7 +119,7 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
         - Generates a final global answer.
 
         :param query: The natural language query from the user.
-        :return: The generated global response text.
+        :return: Generated answer as a string or Pydantic model when a response schema is set.
         """
         context = await self.a_search(query)
         truncated_context: str = self.truncation(str(context))
@@ -130,10 +133,8 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
             language=self.language,
         )
         rendered = rendered_list[0]
+        return await self.llm.chat_completion(
+            conversation=rendered.to_openai(),
+            output_schema=instruction.pydantic_model or str, # type: ignore
+        ) # type: ignore
 
-        result =  await self.client.generate(
-            conversations=[rendered],
-            response_model=instruction.pydantic_model,
-        )
-
-        return result[0].response if hasattr(result[0], "response") else result[0]

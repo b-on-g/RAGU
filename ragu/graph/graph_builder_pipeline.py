@@ -1,6 +1,6 @@
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import networkx as nx
 from graspologic.partition import HierarchicalClusters, hierarchical_leiden
@@ -9,11 +9,11 @@ from ragu.chunker.base_chunker import BaseChunker
 from ragu.chunker.types import Chunk
 from ragu.common.global_parameters import Settings
 from ragu.common.logger import logger
-from ragu.embedder.base_embedder import BaseEmbedder
 from ragu.graph.artifacts_summarizer import EntitySummarizer, RelationSummarizer
 from ragu.graph.community_summarizer import CommunitySummarizer
 from ragu.graph.types import CommunitySummary, Community, Entity, Relation
-from ragu.llm.base_llm import BaseLLM
+from ragu.models.embedder import Embedder
+from ragu.models.llm import LLM
 from ragu.triplet.base_artifact_extractor import BaseArtifactExtractor
 
 
@@ -47,6 +47,7 @@ class BuilderArguments:
     remove_isolated_nodes: bool = True
     vectorize_chunks: bool = False
     cluster_only_if_more_than: int = 10000
+    summarize_only_if_more_than: int = 7
     max_cluster_size: int = 128
     random_seed: int = 42
 
@@ -70,7 +71,7 @@ class GraphBuilderModule:
             self,
             entities: List[Entity],
             relations: List[Relation],
-            **kwargs
+            **kwargs: Any,
     ) -> Tuple[List[Entity], List[Relation]]:
         """
         Process or update multiple nodes and edges during graph construction.
@@ -99,14 +100,12 @@ class InMemoryGraphBuilder:
     and only chunking is performed. This is useful for naive vector RAG where only
     chunk embeddings are needed without knowledge graph construction.
 
-    :param client: LLM client used for understanding and summarization tasks.
+    :param llm: LLM used for understanding and summarization tasks.
     :param chunker: Module responsible for splitting documents into chunks.
     :param artifact_extractor: Extractor for entities and relations from chunks.
     :param build_parameters: Graph-building settings controlling summarization,
         clustering, and optimization behavior.
     :param embedder: Embedding model used for vectorization and clustering.
-    :param llm_cache_flush_every: Number of LLM calls between cache flushes.
-    :param embedder_cache_flush_every: Number of embedder calls between cache flushes.
     :param additional_pipeline: Optional post-processing modules executed after
         extraction/summarization.
     :param language: Working language for prompts and generation.
@@ -114,23 +113,19 @@ class InMemoryGraphBuilder:
 
     def __init__(
         self,
-        client: BaseLLM | None = None,
+        embedder: Embedder,
+        llm: LLM | None = None,
         chunker: BaseChunker | None = None,
         artifact_extractor: BaseArtifactExtractor | None = None,
         build_parameters: BuilderArguments = BuilderArguments(),
-        embedder: BaseEmbedder | None = None,
-        llm_cache_flush_every: int = 100,
-        embedder_cache_flush_every: int = 100,
         additional_pipeline: List[GraphBuilderModule] | None = None,
         language: str | None = None
     ):
-        self.client = client
+        self.llm = llm
         self.chunker = chunker
         self.artifact_extractor = artifact_extractor
         self.additional_pipeline = additional_pipeline
         self.embedder = embedder
-        self.llm_cache_flush_every = llm_cache_flush_every
-        self.embedder_cache_flush_every = embedder_cache_flush_every
         self.language = language if language else Settings.language
         self.build_parameters = build_parameters
 
@@ -139,19 +134,21 @@ class InMemoryGraphBuilder:
             self.entity_summarizer, self.relation_summarizer, self.community_summarizer = None, None, None
         else:
             self.entity_summarizer = EntitySummarizer(
-                client,
+                llm,
                 use_llm_summarization=self.build_parameters.use_llm_summarization,
                 use_clustering=self.build_parameters.use_clustering,
                 cluster_only_if_more_than=self.build_parameters.cluster_only_if_more_than,
+                summarize_only_if_more_than=self.build_parameters.summarize_only_if_more_than,
                 embedder=embedder,
                 language=self.language,
             )
             self.relation_summarizer = RelationSummarizer(
-                client,
+                llm,
                 use_llm_summarization=self.build_parameters.use_llm_summarization,
+                summarize_only_if_more_than=self.build_parameters.summarize_only_if_more_than,
                 language=self.language
             )
-            self.community_summarizer = CommunitySummarizer(self.client, language=self.language)
+            self.community_summarizer = CommunitySummarizer(self.llm, language=self.language)
 
     async def extract_graph(
             self, chunks: List[Chunk]

@@ -1,7 +1,8 @@
 from dataclasses import asdict
 from itertools import chain
-from typing import List, Any, Optional
+from typing import List, Optional, Sequence
 
+import numpy as np
 import pandas as pd
 from sklearn.cluster import DBSCAN
 
@@ -9,12 +10,12 @@ from ragu.common.global_parameters import Settings
 from ragu.common.base import RaguGenerativeModule
 from ragu.common.logger import logger
 from ragu.common.prompts.default_models import RelationDescriptionModel, EntityDescriptionModel
-from ragu.embedder.base_embedder import BaseEmbedder
 from ragu.graph.types import Entity, Relation
-from ragu.llm.base_llm import BaseLLM
 
 from ragu.common.prompts.prompt_storage import RAGUInstruction
 from ragu.common.prompts.messages import ChatMessages, render
+from ragu.models.embedder import Embedder
+from ragu.models.llm import LLM
 
 
 class EntitySummarizer(RaguGenerativeModule):
@@ -28,10 +29,10 @@ class EntitySummarizer(RaguGenerativeModule):
 
     def __init__(
         self,
-        client: Optional[BaseLLM] = None,
+        llm: Optional[LLM] = None,
         use_llm_summarization: bool = True,
         use_clustering: bool = False,
-        embedder: Optional[BaseEmbedder] = None,
+        embedder: Optional[Embedder] = None,
         cluster_only_if_more_than: int = 128,
         summarize_only_if_more_than: int = 5,
         language: Optional[str] = None,
@@ -39,7 +40,7 @@ class EntitySummarizer(RaguGenerativeModule):
         _PROMPTS = ["entity_summarizer", "cluster_summarize"]
         super().__init__(prompts=_PROMPTS)
 
-        self.client = client
+        self.llm = llm
         self.language = language if language else Settings.language
         self.use_llm_summarization = use_llm_summarization
         self.summarize_only_if_more_than = summarize_only_if_more_than
@@ -49,7 +50,7 @@ class EntitySummarizer(RaguGenerativeModule):
         self.cluster_only_if_more_than = cluster_only_if_more_than
         self.embedder = embedder
 
-        if self.use_llm_summarization and self.client is None:
+        if self.use_llm_summarization and self.llm is None:
             raise ValueError(
                 "LLM summarization is enabled but no client is provided. Please provide a client."
             )
@@ -138,11 +139,14 @@ class EntitySummarizer(RaguGenerativeModule):
                 language=self.language,
             )
 
-            response: List[EntityDescriptionModel] = await self.client.generate(  # type: ignore
-                conversations=rendered_list,
-                response_model=instruction.pydantic_model,
-                progress_bar_desc="Entity summarization",
-            )
+            assert self.llm
+            output_schema = instruction.pydantic_model
+            assert output_schema is EntityDescriptionModel
+            response: Sequence[EntityDescriptionModel] = await self.llm.batch_chat_completion(
+                conversations=[c.to_openai() for c in rendered_list],
+                output_schema=output_schema,
+                desc="Entity summarization",
+            ) # type: ignore
 
             for i, summary in enumerate(response):
                 if summary:
@@ -185,8 +189,12 @@ class EntitySummarizer(RaguGenerativeModule):
         :param descriptions: List of raw descriptions for one entity.
         :return: A single merged (and optionally cluster-summarized) description string.
         """
+        assert self.embedder
+        assert self.llm
+
         if len(descriptions) > self.cluster_only_if_more_than and self.use_clustering:
-            cluster = DBSCAN(eps=0.5, min_samples=2).fit(await self.embedder.embed(descriptions))
+            embeddings = np.array(await self.embedder.batch_embed_text(descriptions))
+            cluster = DBSCAN(eps=0.5, min_samples=2).fit(embeddings)
             labels = cluster.labels_
 
             clusters: dict[int, list[str]] = {}
@@ -202,10 +210,10 @@ class EntitySummarizer(RaguGenerativeModule):
                     language=self.language,
                 )
 
-                result = await self.client.generate(  # type: ignore
-                    conversations=rendered_list,
-                    response_model=instruction.pydantic_model,
-                    progress_bar_desc="Map reduce for clustering",
+                result = await self.llm.batch_chat_completion(
+                    [c.to_openai() for c in rendered_list],
+                    output_schema=instruction.pydantic_model,
+                    desc="Map reduce for clustering",
                 )
                 result_description.extend([r.content for r in result if r])
 
@@ -234,7 +242,7 @@ class RelationSummarizer(RaguGenerativeModule):
 
     def __init__(
         self,
-        client: BaseLLM = None,
+        llm: LLM | None = None,
         use_llm_summarization: bool = True,
         summarize_only_if_more_than: int = 5,
         language: str = "russian",
@@ -242,12 +250,12 @@ class RelationSummarizer(RaguGenerativeModule):
         _PROMPTS = ["relation_summarizer"]
         super().__init__(prompts=_PROMPTS)
 
-        self.client = client
+        self.llm = llm
         self.language = language
         self.use_llm_summarization = use_llm_summarization
         self.summarize_only_if_more_than = summarize_only_if_more_than
 
-        if self.use_llm_summarization and self.client is None:
+        if self.use_llm_summarization and self.llm is None:
             raise ValueError(
                 "LLM summarization is enabled but no client is provided. Please provide a client."
             )
@@ -299,6 +307,8 @@ class RelationSummarizer(RaguGenerativeModule):
                                      a ``duplicate_count`` column.
         :return: A list of summarized :class:`Relation` objects.
         """
+        assert self.llm
+
         relation_mask = grouped_relations_df["duplicate_count"].to_numpy() > self.summarize_only_if_more_than
 
         relation_multi_desc = grouped_relations_df.loc[relation_mask]
@@ -321,10 +331,12 @@ class RelationSummarizer(RaguGenerativeModule):
                 language=self.language,
             )
 
-            response: List[RelationDescriptionModel] = await self.client.generate(  # type: ignore
-                conversations=rendered_list,
-                response_model=instruction.pydantic_model,
-            )
+            output_schema = instruction.pydantic_model
+            assert output_schema is RelationDescriptionModel
+            response: List[RelationDescriptionModel] = await self.llm.batch_chat_completion(
+                [c.to_openai() for c in rendered_list],
+                output_schema=output_schema,
+            ) # type: ignore
 
             for i, summary in enumerate(response):
                 if summary:

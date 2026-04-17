@@ -9,7 +9,7 @@ from ragu import (
     SimpleChunker,
 )
 from ragu.embedder import OpenAIEmbedder
-from ragu.llm import OpenAIClient
+from ragu.models import OpenAIClient
 from ragu.utils.ragu_utils import read_text_from_files
 
 
@@ -41,7 +41,7 @@ async def main():
     )
 
     # Set up artifact extractor
-    artifact_extractor = ArtifactsExtractorLLM(client=client, do_validation=False)
+    artifact_extractor = ArtifactsExtractorLLM(llm=client, do_validation=False)
 
     # Set up embedder
     embedder = OpenAIEmbedder(
@@ -62,7 +62,7 @@ async def main():
 
     # Build knowledge graph
     knowledge_graph = KnowledgeGraph(
-        client=client,
+        llm=client,
         embedder=embedder,
         chunker=chunker,
         artifact_extractor=artifact_extractor,

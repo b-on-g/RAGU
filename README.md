@@ -44,7 +44,7 @@ From pypi:
 pip install graph_ragu
 ```
 
-If you want to use local models (via transformers etc), run:
+If you want to use local models (via transformers etc.), run:
 ```bash
 pip install graph_ragu[local]
 ```
@@ -56,7 +56,13 @@ pip install graph_ragu[local]
 ### Simple example of building knowledge graph
 
 ```python
-import asyncio
+import os
+import sys
+import shutil
+
+from ragu.common.logger import logger
+logger.remove()
+logger.add(sys.stdout, level="DEBUG") 
 
 from ragu import (
     SimpleChunker,
@@ -65,75 +71,58 @@ from ragu import (
     Settings,
     ArtifactsExtractorLLM,
 )
-from ragu.llm import OpenAIClient
-from ragu.embedder import OpenAIEmbedder
-
+from ragu.models.embedder import EmbedderOpenAI
+from ragu.models.llm import LLMOpenAI
+from ragu.models.openai import CachedAsyncOpenAI
 from ragu.utils.ragu_utils import read_text_from_files
 
-# Configuration (or use ragu.Env for loading from .env)
-LLM_MODEL_NAME = "openai/gpt-4o-mini"
-LLM_BASE_URL = "https://api.openai.com/v1"
-LLM_API_KEY = "your-api-key-here"
+client = CachedAsyncOpenAI(
+    base_url=os.environ['OPENAI_BASE_URL'],
+    api_key=os.environ['OPENAI_API_KEY'],
+    rate_min_delay=2,
+    rate_max_simultaneous=10,
+    retry_times_sec=(2, 2, 2, 2, 2),
+    cache='./llm_cache',
+    debug_errors_storage='./llm_debug',
+)
 
-EMBEDDER_MODEL_NAME = "text-embedding-3-large"
+llm = LLMOpenAI(client, "mistralai/mistral-medium-3")
+embedder = EmbedderOpenAI(client, "emb-qwen/qwen3-embedding-8b", dim=4096)
 
+# Configure working directory and language
+Settings.storage_folder = "ragu_working_dir"
+Settings.language = "english"  # or "russian"
 
-async def main():
-    # Configure working directory and language
-    Settings.storage_folder = "ragu_working_dir"
-    Settings.language = "english"  # or "russian"
+# Remove dir to start building graph from scratch
+# shutil.rmtree(Settings.storage_folder, ignore_errors=True)
 
-    # Load documents from folder
-    docs = read_text_from_files("path/to/your/data")
+docs = read_text_from_files("path/to/your/files")
 
-    # Initialize chunker
-    chunker = SimpleChunker(max_chunk_size=1000)
+# Initialize chunker
+chunker = SimpleChunker(max_chunk_size=1000)
 
-    # Set up LLM client
-    client = OpenAIClient(
-        model_name=LLM_MODEL_NAME,
-        base_url=LLM_BASE_URL,
-        api_token=LLM_API_KEY,
-        max_requests_per_second=1,
-        max_requests_per_minute=60,
-        cache_flush_every=10,
-    )
+# Set up artifact extractor
+artifact_extractor = ArtifactsExtractorLLM(
+    llm=llm,
+    do_validation=False
+)
 
-    # Set up artifact extractor
-    artifact_extractor = ArtifactsExtractorLLM(
-        client=client,
-        do_validation=False
-    )
+# Configure builder settings
+builder_settings = BuilderArguments(
+    use_llm_summarization=True,
+    vectorize_chunks=True,
+)
 
-    # Initialize embedder
-    embedder = OpenAIEmbedder(
-        model_name=EMBEDDER_MODEL_NAME,
-        base_url=LLM_BASE_URL,
-        api_token=LLM_API_KEY,
-        dim=3072,
-        max_requests_per_second=1,
-        max_requests_per_minute=60,
-        use_cache=True,
-    )
+# Build knowledge graph
+knowledge_graph = KnowledgeGraph(
+    llm=llm,
+    embedder=embedder,
+    chunker=chunker,
+    artifact_extractor=artifact_extractor,
+    builder_settings=builder_settings,
+)
 
-    # Configure builder settings
-    builder_settings = BuilderArguments(
-        use_llm_summarization=True,
-        vectorize_chunks=True,
-    )
-
-    # Build knowledge graph
-    knowledge_graph = await KnowledgeGraph(
-        client=client,
-        embedder=embedder,
-        chunker=chunker,
-        artifact_extractor=artifact_extractor,
-        builder_settings=builder_settings,
-    ).build_from_docs(docs)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+asyncio.run(knowledge_graph.build_from_docs(docs))
 ```
 
 > If you run the code with a storage folder that already contains a knowledge graph, RAGU will automatically load the existing graph.
@@ -144,16 +133,17 @@ if __name__ == "__main__":
 **Local search**
 Search over entities retrieved for the query and their connected context (relations, summaries, and chunks).
 ```python
-from ragu import LocalSearchEngine
+from ragu.search_engine.local_search import LocalSearchEngine
 
 local_search = LocalSearchEngine(
-    client,
+    llm,  # or use another LLM for answering
     knowledge_graph,
     embedder,
     tokenizer_model="gpt-4o-mini",
 )
+# found = await local_search.a_search("What is the Betweenlands??")
 local_answer = await local_search.a_query("Who wrote Romeo and Juliet?")
-print(local_answer)
+print(local_answer.response)
 ```
 
 #### Global search
@@ -162,7 +152,7 @@ Give an answer by community summaries.
 from ragu import GlobalSearchEngine
 
 global_search = GlobalSearchEngine(
-    client=client,
+    llm=llm,
     knowledge_graph=knowledge_graph,
 )
 global_answer = await global_search.a_query("Your broad query here")
@@ -174,7 +164,7 @@ print(global_answer)
 from ragu import NaiveSearchEngine
 
 naive_search = NaiveSearchEngine(
-    client=client,
+    llm=llm,
     knowledge_graph=knowledge_graph,
     embedder=embedder,
 )
@@ -244,40 +234,40 @@ Each text in corpus is processed to extract structured information. It consist o
 
 ### Entity types
 
-|No. | Entity type | No. | Entity type | No. | Entity type |
-|---|---|---|---|---|---|
-|1.| AGE |11.| FAMILY |21.| PENALTY |
-|2.| AWARD |12.| IDEOLOGY |22.| PERCENT |
-|3.| CITY |13.| LANGUAGE |23.| PERSON |
-|4.| COUNTRY |14.| LAW |24.| PRODUCT |
-|5.| CRIME |15.| LOCATION |25.| PROFESSION |
-|6.| DATE |16.| MONEY |26.| RELIGION |
-|7.| DISEASE |17.| NATIONALITY |27.| STATE_OR_PROV |
-|8.| DISTRICT |18.| NUMBER |28.| TIME |
-|9.| EVENT |19.| ORDINAL |29.| WORK_OF_ART |
-|10.| FACILITY |20.| ORGANIZATION | | |
+| No. | Entity type | No. | Entity type  | No. | Entity type   |
+|-----|-------------|-----|--------------|-----|---------------|
+| 1.  | AGE         | 11. | FAMILY       | 21. | PENALTY       |
+| 2.  | AWARD       | 12. | IDEOLOGY     | 22. | PERCENT       |
+| 3.  | CITY        | 13. | LANGUAGE     | 23. | PERSON        |
+| 4.  | COUNTRY     | 14. | LAW          | 24. | PRODUCT       |
+| 5.  | CRIME       | 15. | LOCATION     | 25. | PROFESSION    |
+| 6.  | DATE        | 16. | MONEY        | 26. | RELIGION      |
+| 7.  | DISEASE     | 17. | NATIONALITY  | 27. | STATE_OR_PROV |
+| 8.  | DISTRICT    | 18. | NUMBER       | 28. | TIME          |
+| 9.  | EVENT       | 19. | ORDINAL      | 29. | WORK_OF_ART   |
+| 10. | FACILITY    | 20. | ORGANIZATION |     |               |
 
 ### Relation types
 
-|No. | Relation type | No. | Relation type | No. | Relation type |
-|---|---|---|---|---|---|
-|1.| ABBREVIATION |18.| HEADQUARTERED_IN |35.| PLACE_RESIDES_IN |
-|2.| AGE_DIED_AT |19.| IDEOLOGY_OF |36.| POINT_IN_TIME |
-|3.| AGE_IS |20.| INANIMATE_INVOLVED |37.| PRICE_OF |
-|4.| AGENT |21.| INCOME |38.| PRODUCES |
-|5.| ALTERNATIVE_NAME |22.| KNOWS |39.| RELATIVE |
-|6.| AWARDED_WITH |23.| LOCATED_IN |40.| RELIGION_OF |
-|7.| CAUSE_OF_DEATH |24.| MEDICAL_CONDITION |41.| SCHOOLS_ATTENDED |
-|8.| CONVICTED_OF |25.| MEMBER_OF |42.| SIBLING |
-|9.| DATE_DEFUNCT_IN |26.| ORGANIZES |43.| SPOUSE |
-|10.| DATE_FOUNDED_IN |27.| ORIGINS_FROM |44.| START_TIME |
-|11.| DATE_OF_BIRTH |28.| OWNER_OF |45.| SUBEVENT_OF |
-|12.| DATE_OF_CREATION |29.| PARENT_OF |46.| SUBORDINATE_OF |
-|13.| DATE_OF_DEATH |30.| PART_OF |47.| TAKES_PLACE_IN |
-|14.| END_TIME |31.| PARTICIPANT_IN |48.| WORKPLACE |
-|15.| EXPENDITURE |32.| PENALIZED_AS |49.| WORKS_AS |
-|16.| FOUNDED_BY |33.| PLACE_OF_BIRTH | | |
-|17.| HAS_CAUSE |34.| PLACE_OF_DEATH | | |
+| No. | Relation type    | No. | Relation type      | No. | Relation type    |
+|-----|------------------|-----|--------------------|-----|------------------|
+| 1.  | ABBREVIATION     | 18. | HEADQUARTERED_IN   | 35. | PLACE_RESIDES_IN |
+| 2.  | AGE_DIED_AT      | 19. | IDEOLOGY_OF        | 36. | POINT_IN_TIME    |
+| 3.  | AGE_IS           | 20. | INANIMATE_INVOLVED | 37. | PRICE_OF         |
+| 4.  | AGENT            | 21. | INCOME             | 38. | PRODUCES         |
+| 5.  | ALTERNATIVE_NAME | 22. | KNOWS              | 39. | RELATIVE         |
+| 6.  | AWARDED_WITH     | 23. | LOCATED_IN         | 40. | RELIGION_OF      |
+| 7.  | CAUSE_OF_DEATH   | 24. | MEDICAL_CONDITION  | 41. | SCHOOLS_ATTENDED |
+| 8.  | CONVICTED_OF     | 25. | MEMBER_OF          | 42. | SIBLING          |
+| 9.  | DATE_DEFUNCT_IN  | 26. | ORGANIZES          | 43. | SPOUSE           |
+| 10. | DATE_FOUNDED_IN  | 27. | ORIGINS_FROM       | 44. | START_TIME       |
+| 11. | DATE_OF_BIRTH    | 28. | OWNER_OF           | 45. | SUBEVENT_OF      |
+| 12. | DATE_OF_CREATION | 29. | PARENT_OF          | 46. | SUBORDINATE_OF   |
+| 13. | DATE_OF_DEATH    | 30. | PART_OF            | 47. | TAKES_PLACE_IN   |
+| 14. | END_TIME         | 31. | PARTICIPANT_IN     | 48. | WORKPLACE        |
+| 15. | EXPENDITURE      | 32. | PENALIZED_AS       | 49. | WORKS_AS         |
+| 16. | FOUNDED_BY       | 33. | PLACE_OF_BIRTH     |     |                  |
+| 17. | HAS_CAUSE        | 34. | PLACE_OF_DEATH     |     |                  |
 
 
 ### How it is extracted:
@@ -386,4 +376,3 @@ search_engine.update_prompt("local_search", custom_instruction)
 #### **Small Models Pipeline**
 - Matvey Solovyev
 - Ilya Myznikov
-

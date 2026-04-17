@@ -1,5 +1,7 @@
 import os
 from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
@@ -24,7 +26,7 @@ class GlobalSettings:
 
     language: str = "english"
 
-    def __new__(cls, *args, **kwargs):
+    def __new__(cls, *args: Any, **kwargs: Any):
         if cls.__instance is None:
             cls.__instance = super(GlobalSettings, cls).__new__(cls)
             return cls.__instance
@@ -32,12 +34,12 @@ class GlobalSettings:
             return cls.__instance
 
     @property
-    def storage_folder(self):
+    def storage_folder(self) -> str:
         return self._working_dir
 
     @storage_folder.setter
-    def storage_folder(self, path):
-        self._working_dir = path
+    def storage_folder(self, path: str | Path):
+        self._working_dir = str(path)
 
     def init_storage_folder(self):
         if not os.path.exists(self._working_dir):

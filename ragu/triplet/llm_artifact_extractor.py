@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from typing import List, Tuple, Optional
+from typing import Any, List, Tuple, Optional, cast
 
+from pydantic import BaseModel
+
+from ragu.common.logger import logger
 from ragu.chunker.types import Chunk
 from ragu.common.global_parameters import Settings
+from ragu.common.prompts.default_models import ArtifactsModel
 from ragu.common.prompts.prompt_storage import RAGUInstruction
 from ragu.common.prompts.messages import ChatMessages, render
 from ragu.graph.types import Entity, Relation
-from ragu.llm.base_llm import BaseLLM
+from ragu.models.llm import LLM
 from ragu.triplet.base_artifact_extractor import BaseArtifactExtractor
 from ragu.triplet.types import NEREL_ENTITY_TYPES, NEREL_RELATION_TYPES
 
@@ -25,7 +29,7 @@ class ArtifactsExtractorLLM(BaseArtifactExtractor):
 
     def __init__(
         self,
-        client: BaseLLM,
+        llm: LLM,
         do_validation: bool = False,
         language: str | None = None,
         entity_types: Optional[List[str]] = NEREL_ENTITY_TYPES,
@@ -35,6 +39,7 @@ class ArtifactsExtractorLLM(BaseArtifactExtractor):
         Initialize a new :class:`ArtifactsExtractorLLM`.
 
         :param client: Language model client for generation and validation.
+        :param model_name: Model name to use for generation and validation.
         :param do_validation: Whether to perform additional LLM-based validation of artifacts.
         :param language: Output text language.
         :param entity_types: List of entity types to guide extraction prompts.
@@ -43,13 +48,18 @@ class ArtifactsExtractorLLM(BaseArtifactExtractor):
         _PROMPTS = ["artifact_extraction", "artifact_validation"]
         super().__init__(prompts=_PROMPTS)
 
-        self.client = client
+        self.llm = llm
         self.do_validation = do_validation
         self.language = language if language else Settings.language
         self.entity_types = ", ".join(entity_types) if entity_types else None
         self.relation_types = ", ".join(relation_types) if relation_types else None
 
-    async def extract(self, chunks: List[Chunk], *args, **kwargs) -> Tuple[List[Entity], List[Relation]]:
+    async def extract(
+        self,
+        chunks: List[Chunk],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Tuple[List[Entity], List[Relation]]:
         """
         Extract entities and relations from a collection of chunks.
 
@@ -69,6 +79,7 @@ class ArtifactsExtractorLLM(BaseArtifactExtractor):
         context: List[str] = [chunk.content for chunk in chunks]
 
         extraction_instruction: RAGUInstruction = self.get_prompt("artifact_extraction")
+        assert extraction_instruction.pydantic_model is ArtifactsModel
         extraction_conversations: List[ChatMessages] = render(
             extraction_instruction.messages,
             context=context,
@@ -77,14 +88,22 @@ class ArtifactsExtractorLLM(BaseArtifactExtractor):
             relation_types=self.relation_types,
         )
 
-        result_list = await self.client.generate(
-            conversations=extraction_conversations,
-            response_model=extraction_instruction.pydantic_model,
-            progress_bar_desc="Extracting a knowledge graph from chunks",
+        result_list = await self.llm.batch_chat_completion( # type: ignore
+            [c.to_openai() for c in extraction_conversations],
+            output_schema=extraction_instruction.pydantic_model or str, # type: ignore
+            desc="Extracting a knowledge graph from chunks",
         )
+        result_list = cast(list[ArtifactsModel], result_list)
 
+        for artifacts, chunk in zip(result_list, chunks):
+            logger.debug(
+                f'Got {len(artifacts.entities)} entities'
+                f' and {len(artifacts.relations)} relations for chunk'
+            )
+        
         if self.do_validation:
             validation_instruction: RAGUInstruction = self.get_prompt("artifact_validation")
+            assert validation_instruction.pydantic_model is ArtifactsModel
 
             validation_conversations: List[ChatMessages] = render(
                 validation_instruction.messages,
@@ -94,29 +113,30 @@ class ArtifactsExtractorLLM(BaseArtifactExtractor):
                 relation_types=self.relation_types,
                 language=self.language,
             )
-
-            result_list = await self.client.generate(
-                conversations=validation_conversations,
-                response_model=validation_instruction.pydantic_model,
-                progress_bar_desc="Validation of extracted artifacts",
+            
+            result_list = await self.llm.batch_chat_completion( # type: ignore
+                [c.to_openai() for c in validation_conversations],
+                output_schema=validation_instruction.pydantic_model or str, # type: ignore
+                desc="Validation of extracted artifacts",
             )
+            result_list = cast(list[ArtifactsModel], result_list)
+
+
+            for artifacts, chunk in zip(result_list, chunks):
+                logger.debug(
+                    f'After validation got {len(artifacts.entities)} entities'
+                    f' and {len(artifacts.relations)} relations for chunk'
+                )
 
         for artifacts, chunk in zip(result_list, chunks):
-            if artifacts is None or isinstance(artifacts, Exception):
-                continue
-            if not hasattr(artifacts, "model_dump"):
-                continue
 
             current_chunk_entities: List[Entity] = []
 
-            # Parse entities
-            for result in artifacts.model_dump().get("entities", []):
-                if result is None:
-                    continue
+            for entity_model in artifacts.entities:
                 entity = Entity(
-                    entity_name=result.get("entity_name", ""),
-                    entity_type=result.get("entity_type", "UNKNOWN"),
-                    description=result.get("description", ""),
+                    entity_name=entity_model.entity_name,
+                    entity_type=entity_model.entity_type or "UNKNOWN",
+                    description=entity_model.description,
                     source_chunk_id=[chunk.id],
                     documents_id=[],
                     clusters=[],
@@ -126,16 +146,11 @@ class ArtifactsExtractorLLM(BaseArtifactExtractor):
             entities_result.extend(current_chunk_entities)
 
             # Parse relations
-            for result in artifacts.model_dump().get("relations", []):
-                if result is None:
-                    continue
-
-                subject_name = result.get("source_entity", "")
-                object_name = result.get("target_entity", "")
-
+            for relation in artifacts.relations:
+                subject_name = relation.source_entity
+                object_name = relation.target_entity
                 if not (subject_name and object_name):
                     continue
-
                 subject_entity = next(
                     (e for e in current_chunk_entities if e.entity_name == subject_name),
                     None,
@@ -151,9 +166,9 @@ class ArtifactsExtractorLLM(BaseArtifactExtractor):
                         object_name=object_name,
                         subject_id=subject_entity.id,
                         object_id=object_entity.id,
-                        relation_type=result.get("relation_type", "UNKNOWN"),
-                        description=result.get("description", ""),
-                        relation_strength=result.get("relation_strength", 1.0),
+                        relation_type=relation.relation_type or "UNKNOWN",
+                        description=relation.description,
+                        relation_strength=float(relation.relationship_strength), # type: ignore
                         source_chunk_id=[chunk.id],
                     )
                     relations_result.append(relation)

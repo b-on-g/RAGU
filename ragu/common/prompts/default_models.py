@@ -64,11 +64,11 @@ class RelationModel(BaseModel):
 
 class ArtifactsModel(BaseModel):
     entities: List[EntityModel] = Field(
-        default_factory=list,
+        default_factory=list[EntityModel],
         description="List of extracted entities"
     )
     relations: List[RelationModel] = Field(
-        default_factory=list,
+        default_factory=list[RelationModel],
         description="List of extracted relationships"
     )
 

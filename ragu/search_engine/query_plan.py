@@ -1,6 +1,8 @@
 from typing import List, Dict
 
-from ragu.common.prompts.default_models import SubQuery
+from pydantic import BaseModel
+
+from ragu.common.prompts.default_models import SubQuery, QueryPlan, RewriteQuery
 from ragu.search_engine.base_engine import BaseEngine
 from ragu.search_engine.search_functional import _topological_sort
 
@@ -25,7 +27,7 @@ class QueryPlanEngine(BaseEngine):
 
     def __init__(self, engine: BaseEngine, *args, **kwargs):
         _PROMPTS_NAMES = ["query_decomposition", "query_rewrite"]
-        super().__init__(client=engine.client, prompts=_PROMPTS_NAMES, *args, **kwargs)
+        super().__init__(llm=engine.llm, prompts=_PROMPTS_NAMES, *args, **kwargs)
         self.engine: BaseEngine = engine
 
     async def process_query(self, query: str) -> List[SubQuery]:
@@ -47,14 +49,14 @@ class QueryPlanEngine(BaseEngine):
         )
         rendered = rendered_list[0]
 
-        response = await self.engine.client.generate(
-            conversations=[rendered],
-            response_model=instruction.pydantic_model,
+        response: List[QueryPlan] = await self.engine.llm.chat_completion(    # type: ignore
+            rendered.to_openai(),
+            output_schema=instruction.pydantic_model,
         )
 
-        return response[0].subqueries
+        return response.subqueries
 
-    async def _rewrite_subquery(self, subquery: SubQuery, context: Dict[str, str]) -> str:
+    async def _rewrite_subquery(self, subquery: SubQuery, context: Dict[str, str]) -> SubQuery:
         """
         Rewrite a subquery by injecting answers from its dependency subqueries.
 
@@ -75,12 +77,13 @@ class QueryPlanEngine(BaseEngine):
         )
         rendered = rendered_list[0]
 
-        response = await self.engine.client.generate(
-            conversations=[rendered],
-            response_model=instruction.pydantic_model,
+        response: List[RewriteQuery | str] = await self.engine.llm.chat_completion(
+            rendered.to_openai(),
+            output_schema=instruction.pydantic_model,
         )
 
-        return response[0].query if hasattr(response[0], "query") else response
+        rewritten = response.query if isinstance(response, RewriteQuery) else response
+        return subquery.model_copy(update={"query": rewritten})
 
     async def _answer_subquery(self, subquery: SubQuery, context: Dict[str, str]) -> str:
         """
@@ -88,18 +91,16 @@ class QueryPlanEngine(BaseEngine):
 
         :param subquery: The subquery to execute.
         :param context: Mapping of {subquery_id -> answer} for dependency injection.
-        :return: Answer string for this subquery.
+        :return: Answer string or Pydantic model for this subquery.
         """
         if subquery.depends_on:
-            query = await self._rewrite_subquery(subquery, context)
-        else:
-            query = subquery.query
+            subquery = await self._rewrite_subquery(subquery, context)
 
-        result = await self.engine.a_query(query)
+        result = await self.engine.a_query(subquery.query)
 
         return result
 
-    async def a_query(self, query: str) -> str:
+    async def a_query(self, query: str) -> str | BaseModel:
         """
         Execute a complex query using the plan-and-execute pipeline.
 
@@ -113,12 +114,13 @@ class QueryPlanEngine(BaseEngine):
         by injecting answers from their prerequisite subqueries.
 
         :param query: The complex natural-language query to answer.
-        :return: The final answer as a string.
+        :return: Pydantic model instance when a response schema is set, otherwise a plain string.
+        :rtype: str | BaseModel
         """
         subqueries = await self.process_query(query)
         ordered = _topological_sort(subqueries)
 
-        context: Dict[str, str] = {}
+        context: Dict[str, str | BaseModel] = {}
         for subquery in ordered:
             answer = await self._answer_subquery(subquery, context)
             context[subquery.id] = answer

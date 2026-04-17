@@ -1,24 +1,16 @@
 from __future__ import annotations
-
-import asyncio
 import itertools
 import re
 import time
 from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Any, Optional, Union
 
-import openai
-from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletion
-from tqdm.asyncio import tqdm_asyncio
-
 from ragu.chunker.types import Chunk
-from ragu.common.batch_generator import BatchGenerator
-from ragu.common.cache import TextCache, make_llm_cache_key
 from ragu.common.logger import logger
-from ragu.common.prompts.messages import ChatMessages, UserMessage, render
+from ragu.common.prompts.messages import ChatMessages, render
 from ragu.common.prompts.prompt_storage import RAGUInstruction
 from ragu.graph.types import Entity, Relation
+from ragu.models.llm import LLM
 from ragu.triplet.base_artifact_extractor import BaseArtifactExtractor
 
 
@@ -28,10 +20,10 @@ class ChunkContext:
     Tracks extraction state for a single chunk through all pipeline stages.
     """
     chunk: Chunk
-    raw_entities: List[str] = field(default_factory=list)
-    normalized_entities: List[str] = field(default_factory=list)
-    entities: List[Entity] = field(default_factory=list)
-    relations: List[Relation] = field(default_factory=list)
+    raw_entities: List[str] = field(default_factory=list[str])  # for pyright
+    normalized_entities: List[str] = field(default_factory=list[str])
+    entities: List[Entity] = field(default_factory=list[Entity])
+    relations: List[Relation] = field(default_factory=list[Relation])
 
 
 class RaguLmArtifactExtractor(BaseArtifactExtractor):
@@ -41,27 +33,17 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
 
     def __init__(
         self,
-        ragu_lm_vllm_url: str="",
-        model_name: str = "RaguTeam/RAGU-lm",
-        api_token: str="EMPTY",
+        llm: LLM,
         temperature: float = 0.0,
         top_p: float = 0.95,
-        top_k: int = 100,
-        concurrency: int = 64,
-        request_timeout: int = 120,
-        cache_flush_every: int = 100,
     ) -> None:
         """
         Artifact extractor powered by RAGU-LM with optimized batch processing.
 
-        :param ragu_lm_vllm_url: Base URL of the deployed vLLM server.
+        :param client: Language model client.
         :param model_name: Model name used for inference.
         :param temperature: Sampling temperature used in generation.
         :param top_p: Probability mass for nucleus sampling.
-        :param top_k: Number of tokens considered in top-k sampling.
-        :param concurrency: Maximum concurrent requests (default 64 for small models).
-        :param request_timeout: Timeout in seconds for each request.
-        :param cache_flush_every: Flush cache to disk every N requests (default 100).
         """
         super().__init__(prompts=[
             "ragu_lm_entity_extraction",
@@ -70,22 +52,10 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
             "ragu_lm_relation_description",
         ])
 
-        self.base_url = ragu_lm_vllm_url
-        self.model_name = model_name
+        self.llm = llm
 
         self.temperature = temperature
         self.top_p = top_p
-        self.top_k = top_k
-
-        self._sem = asyncio.Semaphore(max(1, concurrency))
-
-        self.client = AsyncOpenAI(
-            base_url=self.base_url,
-            api_key=api_token,
-            timeout=request_timeout,
-        )
-
-        self._cache = TextCache(flush_every_n_writes=cache_flush_every)
 
     async def extract(
         self,
@@ -108,7 +78,6 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         if not chunks:
             return [], []
 
-        await self._check_connection()
         start_time = time.time()
 
         contexts = [ChunkContext(chunk=chunk) for chunk in chunks]
@@ -141,8 +110,6 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         all_entities = [e for ctx in contexts for e in ctx.entities]
         all_relations = [r for ctx in contexts for r in ctx.relations]
 
-        await self._cache.flush_cache()
-
         elapsed = time.time() - start_time
         logger.info(
             f"Extraction complete: {len(all_entities)} entities, {len(all_relations)} relations "
@@ -169,10 +136,7 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
 
         # Parse responses back to contexts
         for ctx, response in zip(contexts, responses):
-            if not self._ok(response):
-                continue
-
-            lines = self._content(response).splitlines()
+            lines = response.splitlines()
             entities = [ln.strip() for ln in lines if ln.strip()]
             unique_entities = list(dict.fromkeys(entities))  # Preserve order, remove duplicates
 
@@ -187,7 +151,7 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         """
         instruction: RAGUInstruction = self.get_prompt("ragu_lm_entity_normalization")
 
-        conversations = []
+        conversations: list[ChatMessages] = []
         prompt_map: List[Tuple[ChunkContext, int]] = []
 
         for ctx in contexts:
@@ -210,12 +174,9 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         responses = await self._run(conversations, description="Normalizing entities")
 
         # Parse responses back to contexts
-        for (ctx, entity_idx), response in zip(prompt_map, responses):
-            if not self._ok(response):
-                continue
-            normalized = self._content(response)
-            if normalized:
-                ctx.normalized_entities.append(normalized)
+        for (ctx, _entity_idx), response in zip(prompt_map, responses):
+            if response:
+                ctx.normalized_entities.append(response)
 
     async def _batch_generate_descriptions(self, contexts: List[ChunkContext]) -> None:
         """
@@ -223,7 +184,7 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         """
         instruction: RAGUInstruction = self.get_prompt("ragu_lm_entity_description")
 
-        conversations = []
+        conversations: list[ChatMessages] = []
         prompt_map: List[Tuple[ChunkContext, str]] = []  # (context, entity_name)
 
         for ctx in contexts:
@@ -247,16 +208,13 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
 
         # Parse responses back to contexts
         for (ctx, entity_name), response in zip(prompt_map, responses):
-            if not self._ok(response):
-                continue
-            description = self._content(response)
-            if not description:
+            if not response:
                 continue
 
             entity = Entity(
                 entity_name=entity_name,
                 entity_type="UNKNOWN",
-                description=description,
+                description=response,
                 source_chunk_id=[ctx.chunk.id],
                 documents_id=[ctx.chunk.doc_id] if getattr(ctx.chunk, "doc_id", None) else [],
                 clusters=[],
@@ -269,7 +227,7 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         """
         instruction: RAGUInstruction = self.get_prompt("ragu_lm_relation_description")
 
-        conversations = []
+        conversations: list[ChatMessages] = []
         prompt_map: List[Tuple[ChunkContext, Entity, Entity]] = []  # (context, subject, object)
 
         for ctx in contexts:
@@ -300,16 +258,17 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         context_candidates: Dict[int, List[Relation]] = {id(ctx): [] for ctx in contexts}
 
         for (ctx, subject, obj), response in zip(prompt_map, responses):
-            if not self._ok(response):
-                continue
-            description = self._content(response)
+            assert subject.id and obj.id, (
+                'On error here, decide what to do if .id is None,'
+                'but .subject_id and .object_id cannot be None'
+            )
             relation = Relation(
                 subject_id=subject.id,
                 object_id=obj.id,
                 subject_name=subject.entity_name,
                 object_name=obj.entity_name,
                 relation_type="UNKNOWN",
-                description=description,
+                description=response,
                 source_chunk_id=[ctx.chunk.id],
             )
             context_candidates[id(ctx)].append(relation)
@@ -319,135 +278,21 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
             candidates = context_candidates[id(ctx)]
             ctx.relations = self.filter_relations(candidates)
 
-    async def _async_call(self, conversation: ChatMessages) -> ChatCompletion:
+    async def _run(self, conversations: List[ChatMessages], description: str = "") -> List[str]:
         """
-        Make async call to the LLM with a ChatMessages conversation.
-
-        :param conversation: ChatMessages object containing the conversation history.
-        :return: ChatCompletion response from the model.
-        """
-        return await self.client.chat.completions.create(
-            messages=conversation.to_openai(),
-            model=self.model_name,
-            temperature=self.temperature,
-            top_p=self.top_p,
-        )
-
-    @staticmethod
-    def _ok(resp: Any) -> bool:
-        return (resp is not None) and (not isinstance(resp, Exception))
-
-    @staticmethod
-    def _content(resp: Any) -> str:
-        if isinstance(resp, str):
-            return resp.strip()
-        if isinstance(resp, dict):
-            try:
-                choices = resp.get("choices", [])
-                first = choices[0] if choices else {}
-                content = first.get("message", {}).get("content", {})
-                return str(content).strip()
-            except Exception:
-                return ""
-        try:
-            return (resp.choices[0].message.content or "").strip()
-        except Exception:
-            return ""
-
-    async def _check_connection(self) -> None:
-        """
-        Check if the server with RAGU-lm is reachable and the model is available.
-        """
-        try:
-            test_conversation = ChatMessages.from_messages([UserMessage(content="Hello, how are you?")])
-            _ = await self._async_call(test_conversation)
-        except openai.APIConnectionError:
-            raise ConnectionError(
-                "It looks like the vllm with RAGU-LM is not running. "
-                "Run it via 'vllm serve'. See docs for more details."
-            )
-        except openai.NotFoundError:
-            raise ValueError(
-                "It looks like the model is not available. "
-                "Check the model name that you pass to vllm."
-            )
-
-    async def _run(self, conversations: List[ChatMessages], description: str = "") -> List[Any]:
-        """
-        Run LLM inference on a batch of conversations with caching support.
+        Run LLM inference on a batch of conversations.
 
         :param conversations: List of ChatMessages to process.
         :param description: Description for progress bar.
-        :return: List of responses (either strings or Exceptions).
+        :return: List of response strings.
         """
-        if not conversations:
-            return []
-
-        with tqdm_asyncio(total=len(conversations), desc=description if description else None) as pbar:
-            results: List[Any] = [None] * len(conversations)
-            pending: List[Tuple[int, ChatMessages, str]] = []  # (index, conversation, cache_key)
-            cache_hits = 0
-
-            for idx, conversation in enumerate(conversations):
-                conversation_str = conversation.to_str()
-                cache_key = make_llm_cache_key(
-                    content=conversation_str,
-                    model_name=self.model_name,
-                )
-                cached = await self._cache.get(cache_key)
-                if cached is not None:
-                    results[idx] = cached
-                    cache_hits += 1
-                    pbar.update(1)
-                else:
-                    pending.append((idx, conversation, cache_key))
-
-            if cache_hits:
-                logger.info(f"Cache served {cache_hits}/{len(conversations)} responses")
-
-            # Process pending requests in batches
-            if pending:
-                async def process_request(
-                        idx: int,
-                        conversation: ChatMessages,
-                        cache_key: str
-                ) -> Tuple[int, str, str, Any]:
-                    input_instruction = conversation.to_str()
-                    async with self._sem:
-                        try:
-                            response = await self._async_call(conversation)
-                            content = self._content(response)
-                            return idx, cache_key, input_instruction, content
-                        except Exception as e:
-                            return idx, cache_key, input_instruction, e
-                        finally:
-                            pbar.update(1)
-
-                # Process in batches to save cache periodically
-                for batch in BatchGenerator(pending, self._cache.flush_every_n_writes).get_batches():
-                    tasks = [
-                        process_request(idx, conversation, cache_key)
-                        for idx, conversation, cache_key in batch
-                    ]
-                    completed = await asyncio.gather(*tasks, return_exceptions=True)
-
-                    for result in completed:
-                        if isinstance(result, Exception):
-                            continue
-                        idx, cache_key, input_instruction, content = result
-                        results[idx] = content
-                        if not isinstance(content, Exception):
-                            await self._cache.set(
-                                cache_key,
-                                content,
-                                input_instruction=input_instruction,
-                                model_name=self.model_name,
-                            )
-
-                    await self._cache.flush_cache()
-
-            await self._cache.flush_cache()
-            return results
+        return self.llm.batch_chat_completion(
+            [c.to_openai() for c in conversations],
+            output_schema=str,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            desc=description,
+        )
 
     @staticmethod
     def filter_relations(

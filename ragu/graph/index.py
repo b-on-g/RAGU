@@ -12,19 +12,21 @@ from typing import (
     Optional,
     Set,
     Tuple,
-    Type
+    Type,
+    cast
 )
 
 from ragu.chunker.types import Chunk
 from ragu.common.global_parameters import DEFAULT_FILENAMES
 from ragu.common.global_parameters import Settings
-from ragu.embedder.base_embedder import BaseEmbedder
 from ragu.graph.types import (
+    ClusterInfo,
     Entity,
     Relation,
     Community,
     CommunitySummary
 )
+from ragu.models.embedder import Embedder
 from ragu.storage.base_storage import (
     BaseKVStorage,
     BaseVectorStorage,
@@ -33,6 +35,7 @@ from ragu.storage.base_storage import (
 )
 from ragu.storage.graph_storage_adapters.networkx_adapter import NetworkXStorage
 from ragu.storage.kv_storage_adapters.json_storage import JsonKVStorage
+from ragu.storage.types import Embedding
 from ragu.storage.vdb_storage_adapters.nano_vdb import NanoVectorDBStorage
 
 
@@ -51,14 +54,14 @@ class StorageArguments:
     :param graph_storage_kwargs: Additional kwargs passed to graph backend storage.
     """
     graph_backend_storage: Type[BaseGraphStorage] = NetworkXStorage
-    kv_storage_type: Type[BaseKVStorage] = JsonKVStorage
+    kv_storage_type: Type[BaseKVStorage[Any]] = JsonKVStorage
     vdb_storage_type: Type[BaseVectorStorage] = NanoVectorDBStorage
 
-    chunks_kv_storage_kwargs: Dict = field(default_factory=dict)
-    summary_kv_storage_kwargs: Dict = field(default_factory=dict)
-    communities_kv_storage_kwargs: Dict = field(default_factory=dict)
-    vdb_storage_kwargs: Dict = field(default_factory=dict)
-    graph_storage_kwargs: Dict = field(default_factory=dict)
+    chunks_kv_storage_kwargs: Dict[str, Any] = field(default_factory=dict[str, Any])
+    summary_kv_storage_kwargs: Dict[str, Any] = field(default_factory=dict[str, Any])
+    communities_kv_storage_kwargs: Dict[str, Any] = field(default_factory=dict[str, Any])
+    vdb_storage_kwargs: Dict[str, Any] = field(default_factory=dict[str, Any])
+    graph_storage_kwargs: Dict[str, Any] = field(default_factory=dict[str, Any])
 
 
 class Index:
@@ -71,13 +74,13 @@ class Index:
 
     def __init__(
             self,
-            embedder: BaseEmbedder,
+            embedder: Embedder,  # cannot be optional, since calls .dim in __init__
             arguments: StorageArguments,
     ):
         """
         Initialize storage backends and in-memory reverse indexes.
 
-        :param embedder: Embedder used by vector storages.
+        :param embedder: Embedder used for text-to-vector conversion.
         :param arguments: Configuration for storage backend implementations.
         """
         Settings.init_storage_folder()
@@ -130,13 +133,38 @@ class Index:
         self.community_summary_kv_storage = arguments.kv_storage_type(**summary_kv_kwargs)
         self.community_kv_storage = arguments.kv_storage_type(**community_kv_kwargs)
 
+        embedding_dim_from_embedder = embedder.dim
+
+        dimensions_from_kwargs = [
+            storage_kwargs.get("embedding_dim") for storage_kwargs in [
+                entity_vdb_kwargs,
+                relation_vdb_kwargs,
+                chunk_vdb_kwargs
+            ] if storage_kwargs.get("embedding_dim")]
+
+        number_of_dimensions = len(dimensions_from_kwargs)
+        if number_of_dimensions > 1:
+            raise ValueError(f"Dimension mismatch in vdb kwargs: {dimensions_from_kwargs}")
+        if number_of_dimensions == 1:
+            if dimensions_from_kwargs[0] != embedding_dim_from_embedder:
+                raise ValueError(f"Dimension mismatch in vdb kwargs and embedder setup: "
+                                 f"{dimensions_from_kwargs[0]} and {embedding_dim_from_embedder}")
+
+        resolved_dim = embedding_dim_from_embedder
+
+        entity_vdb_kwargs["embedding_dim"] = resolved_dim
+        relation_vdb_kwargs["embedding_dim"] = resolved_dim
+        chunk_vdb_kwargs["embedding_dim"] = resolved_dim
+
         # Vector storages
-        self.entity_vector_db = arguments.vdb_storage_type(embedder=embedder, **entity_vdb_kwargs)
-        self.relation_vector_db = arguments.vdb_storage_type(embedder=embedder, **relation_vdb_kwargs)
-        self.chunk_vector_db = arguments.vdb_storage_type(embedder=embedder, **chunk_vdb_kwargs)
+        self.entity_vector_db = arguments.vdb_storage_type(**entity_vdb_kwargs)
+        self.relation_vector_db = arguments.vdb_storage_type(**relation_vdb_kwargs)
+        self.chunk_vector_db = arguments.vdb_storage_type(**chunk_vdb_kwargs)
 
         # Graph storage
         self.graph_backend = arguments.graph_backend_storage(
+            node_cls=Entity,
+            edge_cls=Relation,
             **graph_kwargs
         )
 
@@ -155,12 +183,15 @@ class Index:
 
         incoming_by_id: Dict[str, List[Entity]] = defaultdict(list)
         for entity in entities:
+            assert entity.id  # according to incoming_by_id type hint, should be not None
             incoming_by_id[entity.id].append(entity)
 
         existing_entities = await self.graph_backend.get_nodes(list(incoming_by_id.keys()))
-        existing_by_id: Dict[str, Entity] = {
-            e.id: e for e in existing_entities if e is not None
-        }
+        existing_by_id: Dict[str, Entity] = {}
+        for e in existing_entities:
+            if e is not None:
+                assert e.id  # according to existing_by_id type hint, should be not None
+                existing_by_id[e.id] = e
 
         entities_to_insert: List[Entity] = []
         for entity_id, incoming_group in incoming_by_id.items():
@@ -182,7 +213,8 @@ class Index:
             }
             for e in entities_to_insert
         }
-        await self.entity_vector_db.upsert(vdb_data)
+        embeddings = await self._build_embeddings(vdb_data, tqdm_title="Entities vectorization")
+        await self.entity_vector_db.upsert(embeddings)
 
         await self.graph_backend.index_done_callback()
         await self.entity_vector_db.index_done_callback()
@@ -205,6 +237,7 @@ class Index:
 
         incoming_by_id: Dict[str, List[Entity]] = defaultdict(list)
         for entity in entities:
+            assert entity.id
             incoming_by_id[entity.id].append(entity)
 
         duplicate_ids = [entity_id for entity_id, group in incoming_by_id.items() if len(group) > 1]
@@ -227,7 +260,8 @@ class Index:
             }
             for e in entities_to_update
         }
-        await self.entity_vector_db.upsert(vdb_data)
+        embeddings = await self._build_embeddings(vdb_data, tqdm_title="Entities vectorization")
+        await self.entity_vector_db.upsert(embeddings)
 
         await self.graph_backend.index_done_callback()
         await self.entity_vector_db.index_done_callback()
@@ -260,6 +294,7 @@ class Index:
 
         incoming_by_id: Dict[str, List[Relation]] = defaultdict(list)
         for relation in relations:
+            assert relation.id
             incoming_by_id[relation.id].append(relation)
 
         existing_relation_groups = await self._get_existing_relations_grouped_by_id(set(incoming_by_id.keys()))
@@ -279,7 +314,7 @@ class Index:
             (relation.subject_id, relation.object_id, relation.id)
             for relations_group in existing_relation_groups.values()
             for relation in relations_group
-            if relation is not None and relation.id
+            if relation.id
         ]
         if delete_specs:
             await self.graph_backend.delete_edges(delete_specs)
@@ -296,7 +331,8 @@ class Index:
         }
         if existing_relation_ids:
             await self.relation_vector_db.delete(existing_relation_ids)
-        await self.relation_vector_db.upsert(vdb_data)
+        embeddings = await self._build_embeddings(vdb_data, tqdm_title="Relations vectorization")
+        await self.relation_vector_db.upsert(embeddings)
 
         await self.graph_backend.index_done_callback()
         await self.relation_vector_db.index_done_callback()
@@ -344,7 +380,7 @@ class Index:
             (relation.subject_id, relation.object_id, relation.id)
             for relations_group in existing_relation_groups.values()
             for relation in relations_group
-            if relation is not None and relation.id
+            if relation.id
         ]
         if delete_specs:
             await self.graph_backend.delete_edges(delete_specs)
@@ -360,7 +396,8 @@ class Index:
             for r in relations_to_update
         }
         await self.relation_vector_db.delete(relation_ids)
-        await self.relation_vector_db.upsert(vdb_data)
+        embeddings = await self._build_embeddings(vdb_data, tqdm_title="Relations vectorization")
+        await self.relation_vector_db.upsert(embeddings)
 
         await self.graph_backend.index_done_callback()
         await self.relation_vector_db.index_done_callback()
@@ -370,34 +407,32 @@ class Index:
         )
         return self
 
-    async def upsert_chunks(self, chunks: List[Chunk], vectorize: bool = False) -> "Index":
+    async def upsert_chunks(self, chunks: List[Chunk]) -> "Index":
         """
         Insert or update chunks into KV storage (and optionally vector DB).
 
         :param chunks: Chunks to upsert.
-        :param vectorize: Whether to generate and store embeddings.
         :return: Self for method chaining.
         """
         if not chunks:
             return self
 
         # Store in KV
-        kv_data = {}
+        kv_data: dict[str, dict[str, Any]] = {}
         for chunk in chunks:
             chunk_dict = asdict(chunk)
-            chunk_id = chunk_dict.pop("id")
+            chunk_id = cast(str, chunk_dict.pop("id"))
             kv_data[chunk_id] = chunk_dict
 
         await self.chunks_kv_storage.upsert(kv_data)
 
-        # Optionally store in vector DB
-        if vectorize:
-            vdb_data = {
-                c.id: {"content": c.content, "doc_id": c.doc_id}
-                for c in chunks
-            }
-            await self.chunk_vector_db.upsert(vdb_data)
-            await self.chunk_vector_db.index_done_callback()
+        vdb_data = {
+            c.id: {"content": c.content, "doc_id": c.doc_id}
+            for c in chunks
+        }
+        embeddings = await self._build_embeddings(vdb_data, tqdm_title="Chunks vectorization")
+        await self.chunk_vector_db.upsert(embeddings)
+        await self.chunk_vector_db.index_done_callback()
 
         await self.chunks_kv_storage.index_done_callback()
         return self
@@ -471,14 +506,13 @@ class Index:
         }
 
         for entity in entities:
-            remapped_memberships: List[Dict[str, Any]] = []
+            remapped_memberships: List[ClusterInfo] = []
             seen_memberships: Set[Tuple[int, int]] = set()
             for membership in entity.clusters:
-                if not isinstance(membership, dict):
-                    continue
+                assert isinstance(membership, dict), f'What is membership? {membership}'
                 try:
-                    level = int(membership.get("level"))
-                    local_cluster_id = int(membership.get("cluster_id"))
+                    level = membership['level']
+                    local_cluster_id = membership["cluster_id"]
                 except (TypeError, ValueError):
                     continue
 
@@ -500,8 +534,7 @@ class Index:
         remapped_summaries: List[CommunitySummary] = []
         if summaries:
             for summary in summaries:
-                if summary is None:
-                    continue
+                assert summary is not None, 'Why summary is None?'
                 new_summary_id = old_to_new_community_id.get(str(summary.id), summary.id)
                 remapped_summaries.append(
                     CommunitySummary(
@@ -522,7 +555,7 @@ class Index:
         if not communities:
             return self
 
-        kv_data = {
+        kv_data: dict[str, Any] = {
             c.id: {
                 "level": c.level,
                 "cluster_id": c.cluster_id,
@@ -689,7 +722,7 @@ class Index:
         :return: List of chunks (``None`` for missing).
         """
         chunk_dicts = await self.chunks_kv_storage.get_by_ids(chunk_ids)
-        result = []
+        result: list[Chunk | None] = []
         for chunk_dict in chunk_dicts:
             if chunk_dict is None:
                 result.append(None)
@@ -705,7 +738,7 @@ class Index:
         :return: List of communities (``None`` for missing).
         """
         community_dicts = await self.community_kv_storage.get_by_ids(community_ids)
-        communities = []
+        communities: list[Community | None] = []
 
         for community_id, community_dict in zip(community_ids, community_dicts):
             if community_dict is None:
@@ -739,8 +772,10 @@ class Index:
         :param top_k: Number of results to return.
         :return: Matching entities.
         """
-        results = await self.entity_vector_db.query(query, top_k=top_k)
-        entity_ids = [r["id"] for r in results]
+        query_vector = await self.embedder.embed_text(query)
+
+        results = await self.entity_vector_db.query(Embedding(vector=query_vector), top_k=top_k)
+        entity_ids = [r.id for r in results]
         entities = await self.get_entities(entity_ids)
         return [e for e in entities if e is not None]
 
@@ -752,13 +787,54 @@ class Index:
         :param top_k: Number of results to return.
         :return: Matching relations.
         """
-        results = await self.relation_vector_db.query(query, top_k=top_k)
+        query_vector = await self.embedder.embed_text(query)
+
+        results = await self.relation_vector_db.query(Embedding(vector=query_vector), top_k=top_k)
         edge_specs: List[EdgeSpec] = [
-            (r["subject"], r["object"], r["id"])
+            (
+                str(r.metadata.get("subject")),
+                str(r.metadata.get("object")),
+                r.id,
+            )
             for r in results
+            if r.metadata.get("subject") and r.metadata.get("object")
         ]
+        if not edge_specs:
+            return []
         relations = await self.get_relations(edge_specs)
         return [r for r in relations if r is not None]
+
+    async def _build_embeddings(
+            self, 
+            payloads: Dict[str, Dict[str, Any]], 
+            tqdm_title: Optional[str]="Vectorization"
+    ) -> List[Embedding]:
+        """
+        Convert text payloads to vector embeddings.
+
+        :param payloads: Mapping ``id -> payload`` where payload contains ``content``.
+        :return: Embeddings ready for vector storage upsert.
+        """
+        if not self.embedder:
+            raise ValueError("Embedder is required for vector operations.")
+        if not payloads:
+            return []
+
+        payload_items = list(payloads.items())
+        contents: List[str] = [str(payload.get("content", "")) for _, payload in payload_items]
+        vectors = await self.embedder.batch_embed_text(contents, desc=tqdm_title)
+
+        embeddings: List[Embedding] = []
+        for (record_id, payload), vector in zip(payload_items, vectors):
+            metadata = {key: value for key, value in payload.items() if key != "content"}
+            embeddings.append(
+                Embedding(
+                    id=record_id,
+                    vector=vector,
+                    metadata=metadata,
+                )
+            )
+        return embeddings
 
     async def _validate_relation_endpoints_exist(self, relations: List[Relation]) -> None:
         """
@@ -797,8 +873,8 @@ class Index:
         all_relations = await self.graph_backend.get_all_edges()
         grouped: Dict[str, List[Relation]] = defaultdict(list)
         for relation in all_relations:
-            if relation is None or relation.id is None:
-                continue
+            assert relation  # this should not None due to input args typing
+            assert relation.id
             if relation.id in relation_ids:
                 grouped[relation.id].append(relation)
         return dict(grouped)
@@ -842,7 +918,7 @@ class Index:
         :param entity_groups: Mapping of entity ID to list of entities.
         :return: One merged entity per ID.
         """
-        merged = []
+        merged: list[Entity] = []
 
         for entities in entity_groups.values():
             if len(entities) == 1:
@@ -856,22 +932,21 @@ class Index:
                 [e.description for e in by_richness]
             )
 
-            all_chunks = set()
-            all_docs = set()
-            all_clusters = []
+            all_chunks = set[str]()
+            all_docs = set[str]()
+            all_clusters: list[ClusterInfo] = []
             for e in by_richness:
                 all_chunks.update(e.source_chunk_id)
                 all_docs.update(e.documents_id)
                 all_clusters.extend(e.clusters)
 
-            deduplicated_clusters: List[Dict[str, Any]] = []
-            seen_cluster_keys: Set[Tuple[int, str]] = set()
+            deduplicated_clusters: List[ClusterInfo] = []
+            seen_cluster_keys: Set[tuple[int, int]] = set()
             for cluster in all_clusters:
-                if not isinstance(cluster, dict):
-                    continue
+                assert isinstance(cluster, dict)  # or what is cluster?
                 try:
-                    level = int(cluster.get("level"))
-                    cluster_id = str(cluster.get("cluster_id"))
+                    level = cluster['level']
+                    cluster_id = cluster['cluster_id']
                 except (TypeError, ValueError):
                     continue
 
@@ -880,7 +955,7 @@ class Index:
                     continue
 
                 seen_cluster_keys.add(cluster_key)
-                normalized_cluster = {"level": level, "cluster_id": cluster_id}
+                normalized_cluster: ClusterInfo = {"level": level, "cluster_id": cluster_id}
                 for key, value in cluster.items():
                     if key not in normalized_cluster:
                         normalized_cluster[key] = value
@@ -910,7 +985,7 @@ class Index:
         :param relation_groups: Mapping of relation ID to list of duplicates.
         :return: One merged relation per group.
         """
-        merged = []
+        merged: list[Relation] = []
 
         for relations in relation_groups.values():
             if len(relations) == 1:
@@ -926,7 +1001,7 @@ class Index:
 
             avg_strength = sum(r.relation_strength for r in by_richness) / len(by_richness)
 
-            all_chunks = set()
+            all_chunks = set[str]()
             for r in by_richness:
                 all_chunks.update(r.source_chunk_id)
 
@@ -1017,7 +1092,7 @@ class Index:
         if not self._chunk_to_entities:
             await self._rebuild_reverse_indexes()
 
-        entity_ids = set()
+        entity_ids = set[str]()
         for chunk_id in chunk_ids:
             entity_ids.update(self._chunk_to_entities.get(chunk_id, set()))
 
@@ -1063,8 +1138,8 @@ class Index:
     def _build_storage_kwargs(
             storage_folder: str,
             filename: str,
-            provided_kwargs: Optional[Dict] = None,
-    ) -> Dict:
+            provided_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
         Build effective storage kwargs and ensure a default absolute ``filename``.
 

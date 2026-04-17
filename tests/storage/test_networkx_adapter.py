@@ -6,7 +6,11 @@ from ragu.storage.graph_storage_adapters.networkx_adapter import NetworkXStorage
 
 @pytest.fixture
 def storage(tmp_path):
-    return NetworkXStorage(filename=str(tmp_path / "graph.gml"))
+    return NetworkXStorage(
+        filename=str(tmp_path / "graph.gml"),
+        node_cls=Entity,
+        edge_cls=Relation,
+    )
 
 
 @pytest.fixture
@@ -154,13 +158,21 @@ async def test_iterators_and_batch_delete(storage, entities):
 @pytest.mark.asyncio
 async def test_index_done_callback_persists_and_reloads(tmp_path, entities, relation):
     filename = tmp_path / "graph.gml"
-    storage = NetworkXStorage(filename=str(filename))
+    storage = NetworkXStorage(
+        filename=str(filename),
+        node_cls=Entity,
+        edge_cls=Relation,
+    )
 
     await storage.upsert_nodes([entities["alice"], entities["bob"]])
     await storage.upsert_edges([relation])
     await storage.index_done_callback()
 
-    reloaded = NetworkXStorage(filename=str(filename))
+    reloaded = NetworkXStorage(
+        filename=str(filename),
+        node_cls=Entity,
+        edge_cls=Relation,
+    )
     nodes = await reloaded.get_nodes(["ent-1"])
     edges = await reloaded.get_edges([("ent-1", "ent-2", "rel-1")])
     assert nodes[0] is not None

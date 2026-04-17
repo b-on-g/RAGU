@@ -1,4 +1,4 @@
-__version__ = "1.0.4"
+__version__ = "0.0.1"
 
 # Default chunkers
 from ragu.chunker import SimpleChunker, SmartSemanticChunker
@@ -6,6 +6,7 @@ from ragu.chunker import SimpleChunker, SmartSemanticChunker
 # Knowledge Graph and builders
 from ragu.graph.knowledge_graph import KnowledgeGraph
 from ragu.graph.graph_builder_pipeline import InMemoryGraphBuilder, BuilderArguments
+from ragu.graph.index import StorageArguments
 
 # Global settings
 from ragu.common.env import Env
@@ -15,6 +16,7 @@ from ragu.common.global_parameters import Settings
 from ragu.search_engine import (
     LocalSearchEngine,
     GlobalSearchEngine,
+    MixSearchEngine,
     NaiveSearchEngine,
     QueryPlanEngine
 )
@@ -22,11 +24,9 @@ from ragu.search_engine import (
 # Default extractors
 from ragu.triplet import (
     ArtifactsExtractorLLM,
+    TwoStageArtifactsExtractorLLM,
     RaguLmArtifactExtractor
 )
-
-# Storage arguments
-from ragu.storage.index import StorageArguments
 
 
 __all__ = [
@@ -37,9 +37,11 @@ __all__ = [
     "StorageArguments",
     "LocalSearchEngine",
     "GlobalSearchEngine",
+    "MixSearchEngine",
     "NaiveSearchEngine",
     "QueryPlanEngine",
     "ArtifactsExtractorLLM",
+    "TwoStageArtifactsExtractorLLM",
     "RaguLmArtifactExtractor",
     "Env",
     "Settings",

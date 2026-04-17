@@ -24,6 +24,8 @@ from ragu.common.prompts.default_templates import (
     DEFAULT_RELATIONSHIP_SUMMARIZER_PROMPT,
     DEFAULT_ENTITY_SUMMARIZER_PROMPT,
     DEFAULT_RESPONSE_ONLY_PROMPT,
+    DEFAULT_MIX_SEARCH_PROMPT,
+    DEFAULT_MIX_SEARCH_CONTEXT_PROMPT,
     DEFAULT_GLOBAL_SEARCH_CONTEXT_PROMPT,
     DEFAULT_GLOBAL_SEARCH_PROMPT,
     DEFAULT_CLUSTER_SUMMARIZER_PROMPT,
@@ -138,6 +140,26 @@ DEFAULT_PROMPT_TEMPLATES: dict[str, RAGUInstruction] = {
         ),
         pydantic_model=DefaultResponseModel,
         description="Prompt for generating a naive vector RAG search response.",
+    ),
+
+    "mix_search": RAGUInstruction(
+        messages=ChatMessages.from_messages(
+            [
+                UserMessage(content=DEFAULT_MIX_SEARCH_PROMPT),
+            ]
+        ),
+        pydantic_model=DefaultResponseModel,
+        description="Prompt for generating an ensemble response from multiple search contexts.",
+    ),
+
+    "mix_search_context": RAGUInstruction(
+        messages=ChatMessages.from_messages(
+            [
+                UserMessage(content=DEFAULT_MIX_SEARCH_CONTEXT_PROMPT),
+            ]
+        ),
+        pydantic_model=None,
+        description="Prompt for formatting ordered multi-engine contexts before final synthesis.",
     ),
 
     "cluster_summarize": RAGUInstruction(

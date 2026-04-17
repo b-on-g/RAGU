@@ -5,22 +5,17 @@ Tests for Index batch CRUD operations and invariant validation.
 import pytest
 from ragu.graph.types import Entity, Relation
 from ragu.chunker.types import Chunk
-from ragu.storage.index import Index, StorageArguments
-from ragu.embedder.openai_embedder import OpenAIEmbedder
+from ragu.graph.index import Index, StorageArguments
+from ragu.models.embedder import Embedder
 from unittest.mock import AsyncMock
 
 
 @pytest.fixture
 def mock_embedder():
     """Create a mock embedder."""
-    embedder = AsyncMock(spec=OpenAIEmbedder)
+    embedder = AsyncMock(spec=Embedder)
     embedder.dim = 128
-    # Mock embedding function
-    async def mock_embed(texts):
-        if isinstance(texts, str):
-            return [[0.1] * 128]
-        return [[0.1] * 128 for _ in texts]
-    embedder.side_effect = mock_embed
+    embedder.embed_text = AsyncMock(return_value=[0.1] * 128)
     return embedder
 
 

@@ -8,7 +8,7 @@ from ragu.common.prompts.default_models import CommunityReportModel
 from ragu.common.prompts.prompt_storage import RAGUInstruction
 from ragu.common.prompts.messages import ChatMessages, render
 from ragu.graph.types import Community, CommunitySummary
-from ragu.llm.base_llm import BaseLLM
+from ragu.models.llm import LLM
 
 
 class CommunitySummarizer(RaguGenerativeModule):
@@ -22,7 +22,7 @@ class CommunitySummarizer(RaguGenerativeModule):
     :param language: Language of generated summaries. Defaults to ``Settings.language``.
     """
 
-    def __init__(self, client: BaseLLM, language: str | None = None) -> None:
+    def __init__(self, llm: LLM, language: str | None = None) -> None:
         """
         Initialize community summarizer.
 
@@ -32,7 +32,7 @@ class CommunitySummarizer(RaguGenerativeModule):
         _PROMPTS = ["community_report"]
         super().__init__(prompts=_PROMPTS)
 
-        self.client = client
+        self.llm = llm
         self.language = language if language else Settings.language
 
     async def summarize(self, communities: List[Community]) -> List[CommunitySummary]:
@@ -42,7 +42,7 @@ class CommunitySummarizer(RaguGenerativeModule):
         :param communities: Communities to summarize.
         :return: Community summaries aligned with input communities.
         """
-        sorted_communities = []
+        sorted_communities: list[Community] = []
         for community in communities:
             sorted_communities.append(
                 Community(
@@ -60,10 +60,12 @@ class CommunitySummarizer(RaguGenerativeModule):
             language=self.language,
         )
 
-        summaries: List[CommunityReportModel] = await self.client.generate(  # type: ignore
-            conversations=rendered_list,
-            response_model=instruction.pydantic_model,
-            progress_bar_desc="Summarized communities",
+        output_schema = instruction.pydantic_model
+        assert output_schema is CommunityReportModel
+        summaries: List[CommunityReportModel] = await self.llm.batch_chat_completion( # type: ignore
+            [c.to_openai() for c in rendered_list],
+            output_schema=output_schema,
+            desc="Summarized communities",
         )
 
         output: List[CommunitySummary] = [

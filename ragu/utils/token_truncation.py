@@ -33,7 +33,7 @@ class TokenTruncation:
         elif tokenizer_type == "local":
             try:
                 from transformers import AutoTokenizer
-                self.local_tokenizer = AutoTokenizer.from_pretrained(model_id)
+                self.local_tokenizer = AutoTokenizer.from_pretrained(model_id) # type: ignore
             except Exception as e:
                 raise ValueError(f"[transformers] Failed to load tokenizer '{model_id}': {e}")
         else:
@@ -61,11 +61,11 @@ class TokenTruncation:
         :param text: Input text
         :return: (Truncated text, original token length, truncated token length)
         """
-        tokens = self.local_tokenizer.encode(text, add_special_tokens=False)
-        original_len = len(tokens)
-        truncated_tokens = tokens[:self.max_tokens]
-        decoded = self.local_tokenizer.decode(truncated_tokens, skip_special_tokens=True)
-        return decoded, original_len, len(truncated_tokens)
+        tokens = self.local_tokenizer.encode(text, add_special_tokens=False) # type: ignore
+        original_len = len(tokens) # type: ignore
+        truncated_tokens = tokens[:self.max_tokens] # type: ignore
+        decoded = self.local_tokenizer.decode(truncated_tokens, skip_special_tokens=True) # type: ignore
+        return decoded, original_len, len(truncated_tokens) # type: ignore
 
     def __call__(self, text: str, return_stats: bool = False) -> str:
         """

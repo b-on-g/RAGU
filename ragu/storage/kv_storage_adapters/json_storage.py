@@ -2,12 +2,16 @@
 
 import json
 import os
+from typing import List, TypeVar, Union
+from typing_extensions import override
 
 from ragu.common.global_parameters import Settings
 from ragu.storage.base_storage import BaseKVStorage
 
 
-class JsonKVStorage(BaseKVStorage):
+T = TypeVar("T")
+
+class JsonKVStorage(BaseKVStorage[dict[str, T]]):
     """
     Key-value storage implementation using a local JSON file.
 
@@ -26,13 +30,14 @@ class JsonKVStorage(BaseKVStorage):
         """
         self.filename = os.path.join(storage_folder, filename)
         if not os.path.exists(self.filename):
-            self.data = {}
+            self.data: dict[str, dict[str, T]] = {}
             with open(self.filename, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, indent=2, ensure_ascii=False)
         else:
             with open(self.filename, encoding="utf-8") as f:
                 self.data = json.load(f)
 
+    @override
     async def all_keys(self) -> list[str]:
         """
         Return a list of all keys currently stored in the JSON file.
@@ -41,7 +46,8 @@ class JsonKVStorage(BaseKVStorage):
         """
         return list(self.data.keys())
 
-    async def get_by_id(self, id):
+    @override
+    async def get_by_id(self, id: str) -> Union[dict[str, T], None]:
         """
         Retrieve a record by its unique identifier.
 
@@ -50,7 +56,8 @@ class JsonKVStorage(BaseKVStorage):
         """
         return self.data.get(id, None)
 
-    async def get_by_ids(self, ids, fields=None):
+    @override
+    async def get_by_ids(self, ids: list[str], fields: Union[set[str], None] = None) -> List[Union[dict[str, T], None]]:
         """
         Retrieve multiple records by their identifiers.
 
@@ -71,6 +78,7 @@ class JsonKVStorage(BaseKVStorage):
             for id in ids
         ]
 
+    @override
     async def filter_keys(self, data: list[str]) -> set[str]:
         """
         Return a subset of keys that are not yet present in the store.
@@ -80,7 +88,8 @@ class JsonKVStorage(BaseKVStorage):
         """
         return set([s for s in data if s not in self.data])
 
-    async def upsert(self, data: dict[str, dict]):
+    @override
+    async def upsert(self, data: dict[str, dict[str, T]]):
         """
         Insert or update one or more key-value pairs in the store.
 
@@ -88,6 +97,7 @@ class JsonKVStorage(BaseKVStorage):
         """
         self.data.update(data)
 
+    @override
     async def delete(self, ids: list[str]) -> None:
         """
         Delete multiple records by their IDs from the key-value store.
@@ -98,6 +108,7 @@ class JsonKVStorage(BaseKVStorage):
         for id_ in ids:
             self.data.pop(id_, None)
 
+    @override
     async def drop(self):
         """
         Remove all records from the store (in-memory only).

@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Tuple, List, Iterable
+from typing import Any, Tuple, List, Iterable
 
 
 from ragu.chunker.types import Chunk
@@ -29,8 +29,8 @@ class BaseArtifactExtractor(RaguGenerativeModule, ABC):
     async def extract(
         self,
         chunks: Iterable[Chunk],
-        *args,
-        **kwargs
+        *args: Any,
+        **kwargs: Any
     ) -> Tuple[List[Entity], List[Relation]]:
         """
         Abstract method for extracting entities and relations from text chunks.
@@ -48,8 +48,8 @@ class BaseArtifactExtractor(RaguGenerativeModule, ABC):
     async def __call__(
         self,
         chunks: Iterable[Chunk],
-        *args,
-        **kwargs
+        *args: Any,
+        **kwargs: Any,
     ) -> Tuple[List[Entity], List[Relation]]:
         """
         Execute artifact extraction when the object is called as a coroutine.

@@ -1,8 +1,10 @@
+from collections.abc import Iterable
 import math
-from typing import Generator, List, TypeVar, Sequence
+from typing import Generic, TypeVar, Sequence
 
 T = TypeVar("T")
-class BatchGenerator:
+
+class BatchGenerator(Generic[T]):
     """
     A utility class for generating batches of data.
     """
@@ -17,10 +19,10 @@ class BatchGenerator:
         self.data = data
         self.batch_size = batch_size
 
-    def __call__(self) -> Generator:
-        yield self.get_batches()
+    def __call__(self) -> Iterable[Sequence[T]]:
+        yield from self.get_batches()
 
-    def get_batches(self) -> Generator:
+    def get_batches(self) -> Iterable[Sequence[T]]:
         """
         Generates batches from the dataset.
 

@@ -10,9 +10,21 @@ from pathlib import Path
 import pytest
 
 from ragu.common.global_parameters import Settings
-from ragu.embedder import OpenAIEmbedder
+from ragu.graph.graph_builder_pipeline import BuilderArguments
 from ragu.graph.knowledge_graph import KnowledgeGraph
-from ragu.llm import OpenAIClient
+from ragu.models.embedder import Embedder
+
+
+class DummyEmbedder(Embedder):
+    def __init__(self, dim: int = 3072):
+        self._dim = dim
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    async def embed_text(self, text: str, **kwargs) -> list[float]:
+        return [0.0] * self.dim
 
 
 class TestGraphLoading:
@@ -36,27 +48,22 @@ class TestGraphLoading:
         return example_graph_path
 
     @pytest.fixture
+    def no_llm_builder_settings(self):
+        return BuilderArguments(use_llm_summarization=False)
+
+    @pytest.fixture
     def mock_client(self):
         """
         Create a mock OpenAI client for testing.
         """
-        return OpenAIClient(
-            model_name="gpt-4o-mini",
-            base_url="https://api.openai.com/v1",
-            api_token="dummy-key",
-        )
+        return None
 
     @pytest.fixture
     def mock_embedder(self):
         """
         Create a mock embedder with correct dimensions for test graph.
         """
-        return OpenAIEmbedder(
-            model_name="text-embedding-3-large",
-            base_url="https://api.openai.com/v1",
-            api_token="dummy-key",
-            dim=3072,  # Match the dimension used in example graph
-        )
+        return DummyEmbedder(dim=3072)
 
     def test_example_graph_exists(self, example_graph_path):
         """
@@ -80,27 +87,41 @@ class TestGraphLoading:
             assert file_path.stat().st_size > 0, f"File is empty: {filename}"
 
     @pytest.mark.asyncio
-    async def test_load_existing_graph(self, setup_storage_folder, mock_client, mock_embedder):
+    async def test_load_existing_graph(
+        self,
+        setup_storage_folder,
+        mock_client,
+        mock_embedder,
+        no_llm_builder_settings,
+    ):
         """
         Test loading a pre-built graph from storage.
         """
         # Load graph (should load from storage, not build)
         kg = KnowledgeGraph(
-            client=mock_client,
+            llm=mock_client,
             embedder=mock_embedder,
+            builder_settings=no_llm_builder_settings,
         )
 
         assert kg is not None
         assert kg.index is not None
 
     @pytest.mark.asyncio
-    async def test_loaded_graph_has_entities(self, setup_storage_folder, mock_client, mock_embedder):
+    async def test_loaded_graph_has_entities(
+        self,
+        setup_storage_folder,
+        mock_client,
+        mock_embedder,
+        no_llm_builder_settings,
+    ):
         """
         Verify that loaded graph contains entities.
         """
         kg = KnowledgeGraph(
-            client=mock_client,
+            llm=mock_client,
             embedder=mock_embedder,
+            builder_settings=no_llm_builder_settings,
         )
 
         # Check that graph backend has nodes
@@ -112,13 +133,20 @@ class TestGraphLoading:
         assert num_nodes > 0, "Loaded graph should contain entities"
 
     @pytest.mark.asyncio
-    async def test_loaded_graph_has_relations(self, setup_storage_folder, mock_client, mock_embedder):
+    async def test_loaded_graph_has_relations(
+        self,
+        setup_storage_folder,
+        mock_client,
+        mock_embedder,
+        no_llm_builder_settings,
+    ):
         """
         Verify that loaded graph contains relations.
         """
         kg = KnowledgeGraph(
-            client=mock_client,
+            llm=mock_client,
             embedder=mock_embedder,
+            builder_settings=no_llm_builder_settings,
         )
 
         graph_backend = kg.index.graph_backend
@@ -128,13 +156,20 @@ class TestGraphLoading:
         assert num_edges > 0, "Loaded graph should contain relations"
 
     @pytest.mark.asyncio
-    async def test_loaded_graph_entity_vdb(self, setup_storage_folder, mock_client, mock_embedder):
+    async def test_loaded_graph_entity_vdb(
+        self,
+        setup_storage_folder,
+        mock_client,
+        mock_embedder,
+        no_llm_builder_settings,
+    ):
         """
         Verify that entity vector database is loaded.
         """
         kg = KnowledgeGraph(
-            client=mock_client,
+            llm=mock_client,
             embedder=mock_embedder,
+            builder_settings=no_llm_builder_settings,
         )
 
         entity_vdb = kg.index.entity_vector_db
@@ -144,13 +179,20 @@ class TestGraphLoading:
         assert entity_vdb._client is not None
 
     @pytest.mark.asyncio
-    async def test_loaded_graph_chunks(self, setup_storage_folder, mock_client, mock_embedder):
+    async def test_loaded_graph_chunks(
+        self,
+        setup_storage_folder,
+        mock_client,
+        mock_embedder,
+        no_llm_builder_settings,
+    ):
         """
         Verify that chunks are loaded from KV storage.
         """
         kg = KnowledgeGraph(
-            client=mock_client,
+            llm=mock_client,
             embedder=mock_embedder,
+            builder_settings=no_llm_builder_settings,
         )
 
         chunks_storage = kg.index.chunks_kv_storage

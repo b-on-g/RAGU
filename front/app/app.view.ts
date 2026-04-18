@@ -14,7 +14,12 @@ namespace $.$$ {
 
 		@ $mol_mem
 		config_synced() {
-			this.push_config()
+			try {
+				this.push_config()
+			} catch( error: any ) {
+				if( $mol_promise_like( error ) ) $mol_fail_hidden( error )
+				$mol_fail_log( error )
+			}
 			return true
 		}
 
@@ -22,8 +27,6 @@ namespace $.$$ {
 		override pages() {
 			this.config_synced()
 			return [
-				this.Settings_page(),
-				this.Documents(),
 				this.Dialog(),
 				... this.result() ? [ this.Result_page( this.version() ) ] : [],
 			]
@@ -73,7 +76,7 @@ namespace $.$$ {
 					{
 						method: 'POST',
 						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ query: last.message }),
+						body: JSON.stringify({ query: last.message + '\n\nОтвечай на том же языке, на котором задан вопрос.', engine: 'naive' }),
 					},
 				)
 				this.history([ ... history, resp ])

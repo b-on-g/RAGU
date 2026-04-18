@@ -1,4 +1,49 @@
 services:
+  mssql:
+    image: mcr.microsoft.com/azure-sql-edge:latest
+    container_name: mssql-baltbereg
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "BaltBeregHack2026!"
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+      - ./задание/cleaned.bak:/var/opt/mssql/backup/cleaned.bak:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket; s=socket.create_connection(('localhost',1433),2); s.close()\""]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    ports:
+      - "8100:8000"
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NUMBA_CPU_NAME=generic
+      - MSSQL_HOST=mssql
+      - MSSQL_SA_PASSWORD=BaltBeregHack2026!
+    depends_on:
+      mssql:
+        condition: service_healthy
+    volumes:
+      - ragu_data:/app/ragu_data
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./server
+          target: /app/server
+
+    # http://localhost:8100/api/status
+
   web:
     build:
       context: .
@@ -17,27 +62,6 @@ services:
 
     # http://localhost:9081/bog/RAGU/front/app/-/test.html
 
-  api:
-    platform: linux/arm64
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: api
-    ports:
-      - "8100:8000"
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      - NUMBA_CPU_NAME=generic
-    volumes:
-      - ragu_data:/app/ragu_data
-    develop:
-      watch:
-        - action: sync+restart
-          path: ./server
-          target: /app/server
-
-    # http://localhost:8100/api/status
-
 volumes:
+  mssql-data:
   ragu_data:

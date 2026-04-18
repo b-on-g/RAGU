@@ -2,6 +2,10 @@ namespace $.$$ {
 
 	$mol_style_define( $bog_RAGU_front_app, {
 
+		background: {
+			color: '#1a365d',
+		},
+
 		Documents: {
 			flex: {
 				basis: '30rem',

@@ -16,9 +16,10 @@ from ragu import (
     NaiveSearchEngine,
     Settings,
 )
-from ragu.llm import OpenAIClient
-from ragu.embedder import OpenAIEmbedder
+from ragu.models import LLMOpenAI
+from ragu.models.openai import CachedAsyncOpenAI
 from ragu.triplet import ArtifactsExtractorLLM
+from etl.local_embedder import LocalEmbedder
 
 
 ENV_KEYS = [
@@ -30,8 +31,8 @@ ENV_KEYS = [
 
 class State:
     kg: KnowledgeGraph | None = None
-    client: OpenAIClient | None = None
-    embedder: OpenAIEmbedder | None = None
+    llm: LLMOpenAI | None = None
+    embedder: LocalEmbedder | None = None
     indexed: bool = False
     all_documents: list[str] = []
     all_names: list[str] = []
@@ -40,14 +41,43 @@ class State:
 state = State()
 
 
+def reinit_clients():
+    api_key = os.getenv("LLM_API_KEY_RUNTIME", os.getenv("LLM_API_KEY", ""))
+
+    client = CachedAsyncOpenAI(
+        base_url=os.getenv("LLM_BASE_URL", "https://models.github.ai/inference"),
+        api_key=api_key,
+        rate_max_per_minute=10,
+        retry_times_sec=(15, 30, 60),
+    )
+    state.llm = LLMOpenAI(
+        client=client,
+        model_name=os.getenv("LLM_MODEL", "openai/gpt-4.1-mini"),
+    )
+
+    state.embedder = LocalEmbedder("intfloat/multilingual-e5-small")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     reinit_clients()
+
+    # Auto-load pre-built index if exists
+    storage = os.getenv("RAGU_STORAGE", "ragu_data")
+    chunks_path = os.path.join(storage, "kv_chunks.json")
+    if os.path.exists(chunks_path):
+        try:
+            Settings.storage_folder = storage
+            state.kg = KnowledgeGraph(
+                llm=state.llm,
+                embedder=state.embedder,
+            )
+            state.indexed = True
+            print(f"[RAGU] Auto-loaded index from {storage}")
+        except Exception as e:
+            print(f"[RAGU] Failed to auto-load index: {e}")
+
     yield
-    if state.client:
-        await state.client.async_close()
-    if state.embedder:
-        await state.embedder.aclose()
 
 
 app = FastAPI(title="RAGU API", lifespan=lifespan)
@@ -77,21 +107,6 @@ class BotResponse(BaseModel):
 
 class ConfigUpdate(BaseModel):
     env: dict[str, str]
-
-
-def reinit_clients():
-    state.client = OpenAIClient(
-        model_name=os.getenv("LLM_MODEL", ""),
-        base_url=os.getenv("LLM_BASE_URL", ""),
-        api_token=os.getenv("LLM_API_KEY", ""),
-        max_requests_per_minute=int(os.getenv("LLM_RPM", "60")),
-    )
-    state.embedder = OpenAIEmbedder(
-        model_name=os.getenv("EMBEDDER_MODEL", ""),
-        base_url=os.getenv("EMBEDDER_BASE_URL", os.getenv("LLM_BASE_URL", "")),
-        api_token=os.getenv("EMBEDDER_API_KEY", os.getenv("LLM_API_KEY", "")),
-        dim=int(os.getenv("EMBEDDER_DIM", "3072")),
-    )
 
 
 @app.get("/api/status")
@@ -155,10 +170,10 @@ async def index_documents(
         Settings.language = language
 
         chunker = SimpleChunker(max_chunk_size=1000)
-        extractor = ArtifactsExtractorLLM(client=state.client, do_validation=False)
+        extractor = ArtifactsExtractorLLM(llm=state.llm, do_validation=False)
 
         kg = KnowledgeGraph(
-            client=state.client,
+            llm=state.llm,
             embedder=state.embedder,
             chunker=chunker,
             artifact_extractor=extractor,
@@ -199,23 +214,24 @@ async def query_graph(req: QueryRequest):
 
     try:
         if req.engine == "local":
-            engine = LocalSearchEngine(state.client, state.kg, state.embedder)
+            engine = LocalSearchEngine(state.llm, state.kg, state.embedder)
             answer = await engine.a_query(req.query, top_k=req.top_k)
         elif req.engine == "global":
-            engine = GlobalSearchEngine(state.client, state.kg)
+            engine = GlobalSearchEngine(state.llm, state.kg)
             answer = await engine.a_query(req.query)
         elif req.engine == "naive":
-            engine = NaiveSearchEngine(state.client, state.kg, state.embedder)
+            engine = NaiveSearchEngine(state.llm, state.kg, state.embedder)
             answer = await engine.a_query(req.query, top_k=req.top_k)
         else:
             return BotResponse(message=f"Unknown engine: {req.engine}")
     except Exception as e:
         return BotResponse(message=f"Error: {e}")
 
+    # a_query() may return a string or a Pydantic model with .response
+    text = answer.response if hasattr(answer, "response") else str(answer)
+
     return BotResponse(
-        message=answer,
+        message=text,
         confidence=0.8,
         title=req.query[:50],
     )
-
-

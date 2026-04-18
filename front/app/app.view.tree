@@ -1,5 +1,5 @@
 $bog_RAGU_front_app $giper_bot
-	dialog_title @ \RAGU
+	dialog_title @ \Балтийский Берег — Служба поддержки
 	api_url \http://localhost:8100
 	history? /
 	doc_text? \
@@ -7,14 +7,15 @@ $bog_RAGU_front_app $giper_bot
 	index_message? \
 	index_records? /
 	config_message? \
-	llm_api_key? \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
+	llm_api_key? \
 	llm_base_url? \https://models.github.ai/inference
 	llm_model? \openai/gpt-4.1-mini
-	llm_rpm? \60
-	embedder_api_key? \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
+	llm_rpm? \15
+	embedder_api_key? \
 	embedder_base_url? \https://models.github.ai/inference
 	embedder_model? \text-embedding-3-large
 	embedder_dim? \3072
+	placeholders /
 	Doc_file* $mol_row
 		sub /
 			<= Doc_file_icon* $mol_icon_file

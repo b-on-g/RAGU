@@ -1,6 +1,6 @@
 import time
 from dataclasses import dataclass, field
-from typing import Any, List, Dict, Optional
+from typing import Any, List, Dict
 
 from ragu.utils.ragu_utils import FLOATS, compute_mdhash_id, serialize
 
@@ -34,23 +34,32 @@ class Edge:
         return serialize(self)
 
 
-@dataclass(slots=True)
-class Embedding:
-    """
-    Representation of an embedding.
+DenseEmbedding = FLOATS
 
-    :param id: Unique record identifier.
-    :param vector: Embedding vector.
-    :param metadata: Additional payload.
-    """
-    vector: List[float] | FLOATS
-    metadata: Dict[str, Any] = field(default_factory=dict[str, Any])
-    id: Optional[str] = None
+
+@dataclass(slots=True)
+class SparseEmbedding:
+    indices: List[int]
+    values: List[float]
 
     def __post_init__(self):
-        # If id is not set, generate a random one
-        if self.id is None:
-            self.id = compute_mdhash_id(str(time.time_ns()), prefix="emb")
+        if len(self.indices) != len(self.values):
+            raise ValueError("indices and values must have the same length")
+
+
+@dataclass(slots=True)
+class Point:
+    id: str = "auto"
+    dense_embedding: DenseEmbedding | None = None
+    sparse_embedding: SparseEmbedding | None = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if self.id == "auto":
+            self.id = compute_mdhash_id(str(time.time_ns()), prefix="pnt")
+
+        if self.dense_embedding is None and self.sparse_embedding is None:
+            raise ValueError("Point must contain at least one dense or sparse embedding")
 
 
 @dataclass(slots=True)

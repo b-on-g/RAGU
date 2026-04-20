@@ -4,13 +4,14 @@ from pydantic import BaseModel
 
 from ragu.chunker.types import Chunk
 from ragu.common.global_parameters import Settings
+from ragu.graph.graph_retrieve_backend import GraphRetriever
 from ragu.graph.knowledge_graph import KnowledgeGraph
 from ragu.models.embedder import Embedder
 from ragu.models.llm import LLM
 from ragu.models.scorer import Scorer
+from ragu.models.sparse_embedder import SparseEmbedder
 from ragu.search_engine.base_engine import BaseEngine
 from ragu.search_engine.types import NaiveSearchResult
-from ragu.storage import Embedding
 from ragu.utils.token_truncation import TokenTruncation
 
 from ragu.common.prompts.prompt_storage import RAGUInstruction
@@ -30,6 +31,7 @@ class NaiveSearchEngine(BaseEngine):
         llm: LLM,
         knowledge_graph: KnowledgeGraph,
         embedder: Embedder,
+        sparse_embedder: SparseEmbedder | None = None,
         reranker: Optional[Scorer] = None,
         max_context_length: int = 30_000,
         tokenizer_backend: str = "tiktoken",
@@ -43,7 +45,8 @@ class NaiveSearchEngine(BaseEngine):
 
         :param llm: LLM used to generate the final answer.
         :param knowledge_graph: Knowledge graph containing chunk vector DB and chunk KV storage.
-        :param embedder: Embedding model (kept for interface parity; retrieval uses graph index DBs).
+        :param embedder: Dense embedder used for retrieval queries.
+        :param sparse_embedder: Optional sparse embedder used for hybrid retrieval queries.
         :param reranker: Optional reranker used to improve ranking of retrieved chunks.
         :param max_context_length: Max tokens allowed for context after truncation.
         :param tokenizer_backend: Tokenizer backend used for token truncation.
@@ -60,7 +63,12 @@ class NaiveSearchEngine(BaseEngine):
         )
 
         self.graph = knowledge_graph
-        self.embedder = embedder
+        self.retriever = GraphRetriever(
+            knowledge_graph=knowledge_graph,
+            embedder=embedder,
+            sparse_embedder=sparse_embedder,
+            reranker=reranker,
+        )
         self.reranker = reranker
         self.llm = llm
         self.language = language if language else Settings.language
@@ -82,11 +90,7 @@ class NaiveSearchEngine(BaseEngine):
                              If None, keeps all reranked chunks. Used only when reranker is set.
         :return: NaiveSearchResult with retrieved chunks, scores, and document ids.
         """
-        vectorized_query = await self.embedder.embed_text(query)
-        results = await self.graph.index.chunk_vector_db.query(
-            Embedding(vector=vectorized_query),
-            top_k=top_k
-        )
+        results = await self.retriever.query_chunk_hits(query, top_k=top_k)
 
         if not results:
             return NaiveSearchResult(chunks=[], scores=[], documents_id=[])

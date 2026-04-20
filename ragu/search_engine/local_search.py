@@ -5,10 +5,12 @@ from typing_extensions import override
 from pydantic import BaseModel
 
 from ragu.common.global_parameters import Settings
+from ragu.graph.graph_retrieve_backend import GraphRetriever
 from ragu.graph.knowledge_graph import KnowledgeGraph
 from ragu.models.embedder import Embedder
 from ragu.models.llm import LLM
 from ragu.models.scorer import Scorer
+from ragu.models.sparse_embedder import SparseEmbedder
 from ragu.search_engine.base_engine import BaseEngine
 from ragu.search_engine.search_functional import (
     _find_most_related_edges_from_entities,
@@ -18,7 +20,6 @@ from ragu.search_engine.search_functional import (
     _rerank_items,
 )
 from ragu.search_engine.types import LocalSearchResult
-from ragu.storage import Embedding
 from ragu.utils.token_truncation import TokenTruncation
 
 from ragu.common.prompts.prompt_storage import RAGUInstruction
@@ -44,6 +45,7 @@ class LocalSearchEngine(BaseEngine):
         llm: LLM,
         knowledge_graph: KnowledgeGraph,
         embedder: Embedder,
+        sparse_embedder: SparseEmbedder | None = None,
         reranker: Scorer | None = None,
         max_context_length: int = 30_000,
         tokenizer_backend: str = "tiktoken",
@@ -57,7 +59,8 @@ class LocalSearchEngine(BaseEngine):
 
         :param llm: LLM used to generate the final answer.
         :param knowledge_graph: Knowledge graph used for entity and relation retrieval.
-        :param embedder: Embedding model used for similarity search.
+        :param embedder: Dense embedder used for retrieval queries.
+        :param sparse_embedder: Optional sparse embedder used for hybrid retrieval queries.
         :param reranker: Optional reranker used to reorder retrieved context sections.
         :param max_context_length: Max tokens allowed for the final context (after truncation).
         :param tokenizer_backend: Tokenizer backend used for token counting/truncation.
@@ -74,7 +77,12 @@ class LocalSearchEngine(BaseEngine):
         )
 
         self.knowledge_graph = knowledge_graph
-        self.embedder = embedder
+        self.retriever = GraphRetriever(
+            knowledge_graph=knowledge_graph,
+            embedder=embedder,
+            sparse_embedder=sparse_embedder,
+            reranker=reranker,
+        )
         self.reranker = reranker
         self.language = language if language else Settings.language
 
@@ -87,13 +95,7 @@ class LocalSearchEngine(BaseEngine):
         :param top_k: Number of top entities to retrieve from the entity vector DB.
         :return: LocalSearchResult containing entities, relations, summaries, chunks, and document ids.
         """
-        embedding = await self.embedder.embed_text(query)
-        embedding_hits = await self.knowledge_graph.index.entity_vector_db.query(
-            Embedding(embedding),
-            top_k=top_k,
-        )
-        entities = await self.knowledge_graph.index.get_entities([hit.id for hit in embedding_hits])
-        entities = [e for e in entities if e is not None]
+        entities = await self.retriever.query_entities(query, top_k=top_k)
 
         relations = await _find_most_related_edges_from_entities(entities, self.knowledge_graph)
         relations = [relation for relation in relations if relation is not None]

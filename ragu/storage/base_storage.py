@@ -1,8 +1,19 @@
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
-from typing import Dict, Generic, Iterable, List, Optional, Set, Tuple, TypeVar, Union
+from typing import (
+    Dict,
+    Generic,
+    Iterable,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    TypeVar,
+    Union,
+    Any
+)
 
-from ragu.storage.types import Edge, Embedding, EmbeddingHit, Node
+from ragu.storage.types import Edge, EmbeddingHit, Node, Point
 
 EdgeSpec = Tuple[str, str, Optional[str]]
 
@@ -42,18 +53,17 @@ class BaseVectorStorage(BaseStorage, ABC):
     """
 
     @abstractmethod
-    async def query(self, vector: Embedding, top_k: int) -> List[EmbeddingHit]:
+    async def query(self, point: Point, **kwargs) -> List[EmbeddingHit]:
         """
         Retrieve top-k nearest items for a batch of embedding vectors.
 
-        :param vector: Query embedding vector.
-        :param top_k: Maximum number of results to return per query vector.
+        :param point: Query embedding.
         :return: A list of query hits with distance score and metadata.
         """
         ...
 
     @abstractmethod
-    async def upsert(self, data: List[Embedding]) -> None:
+    async def upsert(self, data: List[Point], **kwargs: Any) -> None:
         """
         Insert or update embedding records.
 
@@ -62,7 +72,7 @@ class BaseVectorStorage(BaseStorage, ABC):
         ...
 
     @abstractmethod
-    async def delete(self, ids: List[str]) -> None:
+    async def delete(self, ids: List[str], **kwargs) -> None:
         """
         Delete records by IDs.
 

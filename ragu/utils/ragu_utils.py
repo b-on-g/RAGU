@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import json
 import logging
 import time
 from collections.abc import Awaitable, Collection, MutableMapping
@@ -7,7 +8,7 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import is_dataclass, asdict
 from hashlib import md5
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Iterator
 from typing import Callable, TypeVar, cast
 from typing import List
 
@@ -170,3 +171,43 @@ def serialize(obj: Any) -> Any:
         }
 
     return str(obj)
+
+def serialized_size(obj) -> int:
+    """
+    Estimate size of object after JSON serialization (bytes).
+    """
+    try:
+        return len(json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    except TypeError:
+        return len(str(obj).encode("utf-8"))
+
+T = TypeVar("T")
+def split_on_batches_by_size(
+    objects: Iterable[T],
+    max_size_in_bytes: int,
+) -> Iterator[List[T]]:
+    current_batch: list[T] = []
+    current_size = 0
+
+    for obj in objects:
+        size = serialized_size(obj)
+        if size > max_size_in_bytes:
+            if current_batch:
+                yield current_batch
+                current_batch = []
+                current_size = 0
+            yield [obj]
+            continue
+
+        if current_size + size > max_size_in_bytes:
+            if current_batch:
+                yield current_batch
+            current_batch = [obj]
+            current_size = size
+        else:
+            current_batch.append(obj)
+            current_size += size
+
+    if current_batch:
+        yield current_batch
+

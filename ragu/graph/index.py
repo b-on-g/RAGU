@@ -4,18 +4,9 @@ import os
 import re
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
-from typing import (
-    Any,
-    Dict,
-    Iterable,
-    List,
-    Optional,
-    Set,
-    Tuple,
-    Type,
-    cast
-)
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Type, cast
 
+import numpy as np
 from ragu.chunker.types import Chunk
 from ragu.common.global_parameters import DEFAULT_FILENAMES
 from ragu.common.global_parameters import Settings
@@ -27,6 +18,7 @@ from ragu.graph.types import (
     CommunitySummary
 )
 from ragu.models.embedder import Embedder
+from ragu.models.sparse_embedder import SparseEmbedder
 from ragu.storage.base_storage import (
     BaseKVStorage,
     BaseVectorStorage,
@@ -35,7 +27,7 @@ from ragu.storage.base_storage import (
 )
 from ragu.storage.graph_storage_adapters.networkx_adapter import NetworkXStorage
 from ragu.storage.kv_storage_adapters.json_storage import JsonKVStorage
-from ragu.storage.types import Embedding
+from ragu.storage.types import Point
 from ragu.storage.vdb_storage_adapters.nano_vdb import NanoVectorDBStorage
 
 
@@ -74,8 +66,9 @@ class Index:
 
     def __init__(
             self,
-            embedder: Embedder,  # cannot be optional, since calls .dim in __init__
             arguments: StorageArguments,
+            embedder: Embedder | None = None,
+            sparse_embedder: SparseEmbedder | None = None,
     ):
         """
         Initialize storage backends and in-memory reverse indexes.
@@ -87,6 +80,7 @@ class Index:
         storage_folder: str = Settings.storage_folder
 
         self.embedder = embedder
+        self.sparse_embedder = sparse_embedder
 
         # Reverse indexes for cascade operations
         self._chunk_to_entities: Dict[str, Set[str]] = defaultdict(set)
@@ -133,28 +127,29 @@ class Index:
         self.community_summary_kv_storage = arguments.kv_storage_type(**summary_kv_kwargs)
         self.community_kv_storage = arguments.kv_storage_type(**community_kv_kwargs)
 
-        embedding_dim_from_embedder = embedder.dim
+        if self.embedder:
+            embedding_dim_from_embedder = embedder.dim
 
-        dimensions_from_kwargs = [
-            storage_kwargs.get("embedding_dim") for storage_kwargs in [
-                entity_vdb_kwargs,
-                relation_vdb_kwargs,
-                chunk_vdb_kwargs
-            ] if storage_kwargs.get("embedding_dim")]
+            dimensions_from_kwargs = [
+                storage_kwargs.get("embedding_dim") for storage_kwargs in [
+                    entity_vdb_kwargs,
+                    relation_vdb_kwargs,
+                    chunk_vdb_kwargs
+                ] if storage_kwargs.get("embedding_dim")]
 
-        number_of_dimensions = len(dimensions_from_kwargs)
-        if number_of_dimensions > 1:
-            raise ValueError(f"Dimension mismatch in vdb kwargs: {dimensions_from_kwargs}")
-        if number_of_dimensions == 1:
-            if dimensions_from_kwargs[0] != embedding_dim_from_embedder:
-                raise ValueError(f"Dimension mismatch in vdb kwargs and embedder setup: "
-                                 f"{dimensions_from_kwargs[0]} and {embedding_dim_from_embedder}")
+            number_of_dimensions = len(dimensions_from_kwargs)
+            if number_of_dimensions > 1:
+                raise ValueError(f"Dimension mismatch in vdb kwargs: {dimensions_from_kwargs}")
+            if number_of_dimensions == 1:
+                if dimensions_from_kwargs[0] != embedding_dim_from_embedder:
+                    raise ValueError(f"Dimension mismatch in vdb kwargs and embedder setup: "
+                                     f"{dimensions_from_kwargs[0]} and {embedding_dim_from_embedder}")
 
-        resolved_dim = embedding_dim_from_embedder
+            resolved_dim = embedding_dim_from_embedder
 
-        entity_vdb_kwargs["embedding_dim"] = resolved_dim
-        relation_vdb_kwargs["embedding_dim"] = resolved_dim
-        chunk_vdb_kwargs["embedding_dim"] = resolved_dim
+            entity_vdb_kwargs["embedding_dim"] = resolved_dim
+            relation_vdb_kwargs["embedding_dim"] = resolved_dim
+            chunk_vdb_kwargs["embedding_dim"] = resolved_dim
 
         # Vector storages
         self.entity_vector_db = arguments.vdb_storage_type(**entity_vdb_kwargs)
@@ -178,6 +173,8 @@ class Index:
         :param entities: Entities to insert.
         :return: Self for method chaining.
         """
+        assert self.embedder
+
         if not entities:
             return self
 
@@ -206,15 +203,28 @@ class Index:
                 entities_to_insert.extend(incoming_group)
 
         await self.graph_backend.upsert_nodes(entities_to_insert)
-        vdb_data = {
-            e.id: {
-                "entity_name": e.entity_name,
-                "content": f"{e.entity_name} - {e.description}",
-            }
-            for e in entities_to_insert
-        }
-        embeddings = await self._build_embeddings(vdb_data, tqdm_title="Entities vectorization")
-        await self.entity_vector_db.upsert(embeddings)
+
+        dense_embeddings = await self.embedder.batch_embed_text(
+            [f"{e.entity_name} - {e.description}" for e in entities_to_insert],
+            desc="Entities vectorization",
+        )
+        sparse_embeddings = self.sparse_embedder.embed_document(
+            [f"{e.entity_name} - {e.description}" for e in entities_to_insert]
+        ) if self.sparse_embedder else [None for _ in entities_to_insert]
+
+        vdb_data = [
+            Point(
+                id=entity.id,
+                dense_embedding=np.array(dense),
+                sparse_embedding=sparse,
+                metadata={
+                    "entity_name": entity.entity_name,
+                    "content": f"{entity.entity_name} - {entity.description}",
+                }
+            ) for entity, dense, sparse in zip(entities_to_insert, dense_embeddings, sparse_embeddings)
+        ]
+
+        await self.entity_vector_db.upsert(vdb_data)
 
         await self.graph_backend.index_done_callback()
         await self.entity_vector_db.index_done_callback()
@@ -232,6 +242,8 @@ class Index:
         :return: Self for method chaining.
         :raises ValueError: If entity IDs are missing/duplicated in request or absent in storage.
         """
+        assert self.embedder
+
         if not entities:
             return self
 
@@ -253,15 +265,26 @@ class Index:
         entities_to_update = [group[0] for group in incoming_by_id.values()]
 
         await self.graph_backend.upsert_nodes(entities_to_update)
-        vdb_data = {
-            e.id: {
-                "entity_name": e.entity_name,
-                "content": f"{e.entity_name} - {e.description}",
-            }
-            for e in entities_to_update
-        }
-        embeddings = await self._build_embeddings(vdb_data, tqdm_title="Entities vectorization")
-        await self.entity_vector_db.upsert(embeddings)
+        dense_embeddings = await self.embedder.batch_embed_text(
+            [f"{e.entity_name} - {e.description}" for e in entities_to_update],
+            desc="Entities vectorization",
+        )
+        sparse_embeddings = self.sparse_embedder.embed_document(
+            [f"{e.entity_name} - {e.description}" for e in entities_to_update]
+        ) if self.sparse_embedder else [None for _ in entities_to_update]
+
+        vdb_data = [
+            Point(
+                id=entity.id,
+                dense_embedding=np.array(dense),
+                sparse_embedding=sparse,
+                metadata={
+                    "entity_name": entity.entity_name,
+                    "content": f"{entity.entity_name} - {entity.description}",
+                }
+            ) for entity, dense, sparse in zip(entities_to_update, dense_embeddings, sparse_embeddings)
+        ]
+        await self.entity_vector_db.upsert(vdb_data, sparse_data=sparse_embeddings)
 
         await self.graph_backend.index_done_callback()
         await self.entity_vector_db.index_done_callback()
@@ -283,6 +306,8 @@ class Index:
         :return: Self for method chaining.
         :raises ValueError: If referenced entities don't exist.
         """
+        assert self.embedder
+
         if not relations:
             return self
 
@@ -321,18 +346,29 @@ class Index:
 
         await self.graph_backend.upsert_edges(relations_to_insert)
 
-        vdb_data = {
-            r.id: {
-                "subject": r.subject_id,
-                "object": r.object_id,
-                "content": r.description,
-            }
-            for r in relations_to_insert
-        }
         if existing_relation_ids:
             await self.relation_vector_db.delete(existing_relation_ids)
-        embeddings = await self._build_embeddings(vdb_data, tqdm_title="Relations vectorization")
-        await self.relation_vector_db.upsert(embeddings)
+
+        dense_embeddings = await self.embedder.batch_embed_text(
+            [r.description for r in relations_to_insert],
+            desc="Relations vectorization",
+        )
+        sparse_embeddings = self.sparse_embedder.embed_document(
+            [r.description for r in relations_to_insert]
+        ) if self.sparse_embedder else [None for _ in relations_to_insert]
+
+        vdb_data = [
+            Point(
+                id=relation.id,
+                dense_embedding=np.array(dense),
+                sparse_embedding=sparse,
+                metadata={
+                     "content": relation.description,
+                }
+            ) for relation, dense, sparse in zip(relations_to_insert, dense_embeddings, sparse_embeddings)
+        ]
+
+        await self.relation_vector_db.upsert(vdb_data)
 
         await self.graph_backend.index_done_callback()
         await self.relation_vector_db.index_done_callback()
@@ -354,6 +390,8 @@ class Index:
         :raises ValueError: If relation IDs are missing/duplicated in request,
             IDs are absent in storage, or referenced entities don't exist.
         """
+        assert self.embedder
+
         if not relations:
             return self
 
@@ -387,17 +425,24 @@ class Index:
 
         await self.graph_backend.upsert_edges(relations_to_update)
 
-        vdb_data = {
-            r.id: {
-                "subject": r.subject_id,
-                "object": r.object_id,
-                "content": r.description,
-            }
-            for r in relations_to_update
-        }
-        await self.relation_vector_db.delete(relation_ids)
-        embeddings = await self._build_embeddings(vdb_data, tqdm_title="Relations vectorization")
-        await self.relation_vector_db.upsert(embeddings)
+        dense_embeddings = await self.embedder.batch_embed_text(
+            [r.description for r in relations_to_update],
+            desc="Relations vectorization",
+        )
+        sparse_embeddings = self.sparse_embedder.embed_document(
+            [r.description for r in relations_to_update]
+        ) if self.sparse_embedder else [None for _ in relations_to_update]
+
+        vdb_data = [
+            Point(
+                id=relation.id,
+                dense_embedding=np.array(dense),
+                sparse_embedding=sparse,
+                metadata={
+                     "content": relation.description,
+                }
+            ) for relation, dense, sparse in zip(relations_to_update, dense_embeddings, sparse_embeddings)
+        ]
 
         await self.graph_backend.index_done_callback()
         await self.relation_vector_db.index_done_callback()
@@ -414,6 +459,8 @@ class Index:
         :param chunks: Chunks to upsert.
         :return: Self for method chaining.
         """
+        assert self.embedder
+
         if not chunks:
             return self
 
@@ -426,12 +473,21 @@ class Index:
 
         await self.chunks_kv_storage.upsert(kv_data)
 
-        vdb_data = {
-            c.id: {"content": c.content, "doc_id": c.doc_id}
-            for c in chunks
-        }
-        embeddings = await self._build_embeddings(vdb_data, tqdm_title="Chunks vectorization")
-        await self.chunk_vector_db.upsert(embeddings)
+        dense_embeddings = await self.embedder.batch_embed_text(
+            [c.content for c in chunks],
+            desc="Chunks vectorization"
+        )
+        sparse_embeddings = self.sparse_embedder.embed_document([c.content for c in chunks]) \
+            if self.sparse_embedder else [None for _ in chunks]
+
+        vdb_data = [Point(
+            id=c.id,
+            dense_embedding=np.array(dense),
+            sparse_embedding=sparse,
+            metadata={"content": c.content, "doc_id": c.doc_id}
+        ) for c, dense, sparse in zip(chunks, dense_embeddings, sparse_embeddings)]
+
+        await self.chunk_vector_db.upsert(vdb_data)
         await self.chunk_vector_db.index_done_callback()
 
         await self.chunks_kv_storage.index_done_callback()
@@ -764,77 +820,6 @@ class Index:
 
         return communities
 
-    async def query_entities(self, query: str, top_k: int = 20) -> List[Entity]:
-        """
-        Search for entities using semantic similarity.
-
-        :param query: Search query text.
-        :param top_k: Number of results to return.
-        :return: Matching entities.
-        """
-        query_vector = await self.embedder.embed_text(query)
-
-        results = await self.entity_vector_db.query(Embedding(vector=query_vector), top_k=top_k)
-        entity_ids = [r.id for r in results]
-        entities = await self.get_entities(entity_ids)
-        return [e for e in entities if e is not None]
-
-    async def query_relations(self, query: str, top_k: int = 20) -> List[Relation]:
-        """
-        Search for relations using semantic similarity.
-
-        :param query: Search query text.
-        :param top_k: Number of results to return.
-        :return: Matching relations.
-        """
-        query_vector = await self.embedder.embed_text(query)
-
-        results = await self.relation_vector_db.query(Embedding(vector=query_vector), top_k=top_k)
-        edge_specs: List[EdgeSpec] = [
-            (
-                str(r.metadata.get("subject")),
-                str(r.metadata.get("object")),
-                r.id,
-            )
-            for r in results
-            if r.metadata.get("subject") and r.metadata.get("object")
-        ]
-        if not edge_specs:
-            return []
-        relations = await self.get_relations(edge_specs)
-        return [r for r in relations if r is not None]
-
-    async def _build_embeddings(
-            self, 
-            payloads: Dict[str, Dict[str, Any]], 
-            tqdm_title: Optional[str]="Vectorization"
-    ) -> List[Embedding]:
-        """
-        Convert text payloads to vector embeddings.
-
-        :param payloads: Mapping ``id -> payload`` where payload contains ``content``.
-        :return: Embeddings ready for vector storage upsert.
-        """
-        if not self.embedder:
-            raise ValueError("Embedder is required for vector operations.")
-        if not payloads:
-            return []
-
-        payload_items = list(payloads.items())
-        contents: List[str] = [str(payload.get("content", "")) for _, payload in payload_items]
-        vectors = await self.embedder.batch_embed_text(contents, desc=tqdm_title)
-
-        embeddings: List[Embedding] = []
-        for (record_id, payload), vector in zip(payload_items, vectors):
-            metadata = {key: value for key, value in payload.items() if key != "content"}
-            embeddings.append(
-                Embedding(
-                    id=record_id,
-                    vector=vector,
-                    metadata=metadata,
-                )
-            )
-        return embeddings
 
     async def _validate_relation_endpoints_exist(self, relations: List[Relation]) -> None:
         """
@@ -1074,8 +1059,8 @@ class Index:
         self._chunk_to_entities.clear()
         self._chunk_to_relations.clear()
 
-        all_entities = await self.graph_backend.get_all_nodes()
-        all_relations = await self.graph_backend.get_all_edges()
+        all_entities: List[Entity] = await self.graph_backend.get_all_nodes()
+        all_relations: List[Relation] = await self.graph_backend.get_all_edges()
 
         await self._update_reverse_indexes(
             entities=all_entities,

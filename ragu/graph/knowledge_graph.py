@@ -14,6 +14,7 @@ from ragu.graph.graph_builder_pipeline import (
 )
 from ragu.graph.types import Entity, Relation, CommunitySummary
 from ragu.models.embedder import Embedder
+from ragu.models.sparse_embedder import SparseEmbedder
 from ragu.models.llm import LLM
 from ragu.graph.index import Index, StorageArguments
 from ragu.triplet.base_artifact_extractor import BaseArtifactExtractor
@@ -38,6 +39,7 @@ class KnowledgeGraph:
         self,
         llm: Optional[LLM],
         embedder: Embedder,
+        sparse_embedder: Optional[SparseEmbedder] = None,
         chunker: Optional[BaseChunker] = None,
         artifact_extractor: Optional[BaseArtifactExtractor] = None,
         builder_settings: Optional[BuilderArguments] = None,
@@ -50,6 +52,7 @@ class KnowledgeGraph:
 
         :param llm: LLM client used by extraction and summarization modules.
         :param embedder: Embedder used by vector storage and optional clustering.
+        :param sparse_embedder: Optional sparse embedder used for hybrid retrieval.
         :param chunker: Optional chunker used to split input documents.
         :param artifact_extractor: Optional entity/relation extractor.
         :param builder_settings: Optional graph builder settings.
@@ -60,25 +63,28 @@ class KnowledgeGraph:
         self.builder_settings = builder_settings or BuilderArguments()
         self.storage_settings = storage_settings or StorageArguments()
         self.language = language or Settings.language
+        self.embedder = embedder
+        self.sparse_embedder = sparse_embedder
 
-        if not additional_modules:
-            additional_modules = []
+        what_to_add = additional_modules if additional_modules else []
 
         if self.builder_settings.remove_isolated_nodes:
-            additional_modules.append(RemoveIsolatedNodes())
+            what_to_add.append(RemoveIsolatedNodes())
 
+        # Build graph
         self.pipeline = InMemoryGraphBuilder(
             llm=llm,
             chunker=chunker,
             artifact_extractor=artifact_extractor,
             build_parameters=self.builder_settings,
             embedder=embedder,
-            additional_pipeline=additional_modules,
+            additional_pipeline=what_to_add,
             language=self.language,
         )
-
+        # Store graph
         self.index = Index(
             embedder=embedder,
+            sparse_embedder=sparse_embedder,
             arguments=self.storage_settings,
         )
 
@@ -119,8 +125,7 @@ class KnowledgeGraph:
                 communities,
                 summaries,
             )
-            
-        
+
         if not is_vector_only:
             await self.index.insert_entities(entities)
             await self.index.insert_relations(relations)
@@ -313,47 +318,6 @@ class KnowledgeGraph:
         await self.index.upsert_summaries([new_summary])
         return self
 
-    async def find_similar_entities(self, entity: Entity, top_k: int = 10) -> List[Entity]:
-        """
-        Find entities semantically similar to the given entity.
-
-        :param entity: Reference entity to search against.
-        :param top_k: Maximum number of results.
-        :return: Similar entities ordered by relevance.
-        """
-        query = f"{entity.entity_name} - {entity.description}"
-        return await self.index.query_entities(query, top_k=top_k)
-
-    async def find_similar_relations(self, relation: Relation, top_k: int = 10) -> List[Relation]:
-        """
-        Find relations semantically similar to the given relation.
-
-        :param relation: Reference relation to search against.
-        :param top_k: Maximum number of results.
-        :return: Similar relations ordered by relevance.
-        """
-        return await self.index.query_relations(relation.description, top_k=top_k)
-
-    async def find_similar_entity_by_query(self, query: str, top_k: int = 10) -> List[Entity]:
-        """
-        Find entities matching a free-text query.
-
-        :param query: Search query text.
-        :param top_k: Maximum number of results.
-        :return: Matching entities ordered by relevance.
-        """
-        return await self.index.query_entities(query, top_k=top_k)
-
-    async def find_similar_relation_by_query(self, query: str, top_k: int = 10) -> List[Relation]:
-        """
-        Find relations matching a free-text query.
-
-        :param query: Search query text.
-        :param top_k: Maximum number of results.
-        :return: Matching relations ordered by relevance.
-        """
-        return await self.index.query_relations(query, top_k=top_k)
-
     async def _deduplicate_chunks_by_id(self, chunks: List[Chunk]) -> List[Chunk]:
         """
         Deduplicate chunks by ``chunk.id`` preserving original order.
@@ -385,3 +349,41 @@ class KnowledgeGraph:
             )
 
         return unique_chunks
+
+    @property
+    async def reindex_community(self) -> "KnowledgeGraph":
+        if not self.pipeline.community_summarizer:
+            raise ValueError()
+
+        await self.index.community_kv_storage.drop()
+        await self.index.community_summary_kv_storage.drop()
+
+        entities = await self.index.graph_backend.get_all_nodes()
+        relations = await self.index.graph_backend.get_all_edges()
+
+        entities = list(
+            map(
+                lambda node: Entity(
+                    entity_name=node.entity_name,
+                    description=node.description,
+                    entity_type=node.entity_type,
+                    source_chunk_id=node.source_chunk_id,
+                    documents_id=node.documents_id,
+                    clusters=[]),
+                entities
+            )
+        )
+
+        communities = await self.pipeline.cluster_graph(entities=entities, relations=relations)
+        summaries = await self.pipeline.community_summarizer.summarize(communities=communities)
+
+        await self.index.upsert_communities(communities)
+        await self.index.upsert_summaries(summaries)
+
+        return self
+
+    async def reindex_descriptions(self)-> "KnowledgeGraph":
+        ...
+
+    async def reindex_graph(self) -> "KnowledgeGraph":
+        return await (await self.reindex_descriptions()).reindex_community

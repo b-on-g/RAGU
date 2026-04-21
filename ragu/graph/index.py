@@ -56,6 +56,56 @@ class StorageArguments:
     graph_storage_kwargs: Dict[str, Any] = field(default_factory=dict[str, Any])
 
 
+@dataclass(frozen=True)
+class ConsistencyIssue:
+    """
+    One consistency violation detected during graph storage audit.
+
+    :param check: Stable machine-readable check identifier.
+    :param message: Short human-readable explanation of the violation.
+    :param details: Additional structured context for the violation.
+    """
+    check: str
+    message: str
+    details: Dict[str, Any] = field(default_factory=dict[str, Any])
+
+
+@dataclass(frozen=True)
+class ConsistencyReport:
+    """
+    Result of :meth:`Index.check_consistency`.
+
+    :param errors: Collected consistency violations.
+    """
+    errors: List[ConsistencyIssue] = field(default_factory=list[ConsistencyIssue])
+
+    @property
+    def is_consistent(self) -> bool:
+        return len(self.errors) == 0
+
+    def to_text(self) -> str:
+        if self.is_consistent:
+            return "Graph consistency: OK\nNo consistency issues found."
+
+        lines = [
+            "Graph consistency: FAILED",
+            f"Issues found: {len(self.errors)}",
+            "",
+        ]
+        for issue in self.errors:
+            lines.append(f"- {issue.check}: {issue.message}")
+            for key, value in sorted(issue.details.items()):
+                if isinstance(value, list):
+                    rendered_value = ", ".join(str(item) for item in value) if value else "-"
+                else:
+                    rendered_value = str(value)
+                lines.append(f"  {key}: {rendered_value}")
+        return "\n".join(lines)
+
+    def __str__(self) -> str:
+        return self.to_text()
+
+
 class Index:
     """
     Manages all storage operations for a knowledge graph.
@@ -1139,3 +1189,171 @@ class Index:
             os.path.abspath(os.path.join(storage_folder, filename)),
         )
         return kwargs
+
+    async def check_consistency(self) -> ConsistencyReport:
+        """
+        Audit cross-storage graph consistency and collect invariant violations.
+
+        Checked invariants: relation endpoints exist as entities in a graph;
+        ``source_chunk_id`` values exist in chunk storage; community
+        entity/relation references exists in the graph; graph and chunk items
+        have vector representations; and every vector has a matching entity,
+        relation, or chunk endpoint.
+
+        :returns: Structured consistency report.
+        """
+        all_entities = [entity for entity in await self.graph_backend.get_all_nodes() if entity is not None]
+        all_relations = [relation for relation in await self.graph_backend.get_all_edges() if relation is not None]
+
+        all_entity_ids_from_graph = {entity.id for entity in all_entities if entity.id}
+        all_relation_ids_from_graph = {relation.id for relation in all_relations if relation.id}
+        all_chunk_ids_from_storage = set(await self.chunks_kv_storage.all_keys())
+
+        errors: List[ConsistencyIssue] = []
+
+        referenced_chunk_ids = {
+            chunk_id
+            for entity in all_entities
+            for chunk_id in entity.source_chunk_id
+        } | {
+            chunk_id
+            for relation in all_relations
+            for chunk_id in relation.source_chunk_id
+        }
+        missing_chunk_ids = sorted(referenced_chunk_ids - all_chunk_ids_from_storage)
+        if missing_chunk_ids:
+            errors.append(
+                ConsistencyIssue(
+                    check="source_chunk_references",
+                    message="Entities or relations reference chunks missing from chunk storage.",
+                    details={"missing_chunk_ids": missing_chunk_ids},
+                )
+            )
+
+        relation_endpoint_ids = {
+            endpoint_id
+            for relation in all_relations
+            for endpoint_id in (relation.subject_id, relation.object_id)
+        }
+        missing_relation_endpoint_ids = sorted(relation_endpoint_ids - all_entity_ids_from_graph)
+        if missing_relation_endpoint_ids:
+            missing_relation_endpoint_id_set = set(missing_relation_endpoint_ids)
+            affected_relation_ids = sorted([
+                relation.id
+                for relation in all_relations
+                if relation.id and (
+                    relation.subject_id in missing_relation_endpoint_id_set
+                    or relation.object_id in missing_relation_endpoint_id_set
+                )
+            ])
+            errors.append(
+                ConsistencyIssue(
+                    check="relation_endpoints",
+                    message="Relations reference entity endpoints that do not exist in the graph.",
+                    details={
+                        "missing_entity_ids": missing_relation_endpoint_ids,
+                        "relation_ids_with_empty_endpoints": affected_relation_ids,
+                    },
+                )
+            )
+
+        community_ids = await self.community_kv_storage.all_keys()
+        community_rows = await self.community_kv_storage.get_by_ids(community_ids) if community_ids else []
+        broken_community_ids: Set[str] = set()
+        missing_community_entity_ids: Set[str] = set()
+        missing_community_relation_ids: Set[str] = set()
+        for community_id, community in zip(community_ids, community_rows):
+            if community is None:
+                broken_community_ids.add(community_id)
+                continue
+
+            missing_entities = set(community.get("entity_ids", [])) - all_entity_ids_from_graph
+            missing_relations = set(community.get("relation_ids", [])) - all_relation_ids_from_graph
+            if missing_entities or missing_relations:
+                broken_community_ids.add(community_id)
+                missing_community_entity_ids.update(missing_entities)
+                missing_community_relation_ids.update(missing_relations)
+
+        if broken_community_ids:
+            errors.append(
+                ConsistencyIssue(
+                    check="community_references",
+                    message="Communities reference entities or relations missing from the graph.",
+                    details={
+                        "community_ids": sorted(broken_community_ids),
+                        "missing_entity_ids": sorted(missing_community_entity_ids),
+                        "missing_relation_ids": sorted(missing_community_relation_ids),
+                    },
+                )
+            )
+
+        entity_vector_ids = set(await self.entity_vector_db.get_all_ids())
+        missing_entity_vector_ids = sorted(all_entity_ids_from_graph - entity_vector_ids)
+        if missing_entity_vector_ids:
+            errors.append(
+                ConsistencyIssue(
+                    check="entity_vector_representations",
+                    message="Graph entities exist without matching entity vectors.",
+                    details={"missing_vector_ids": missing_entity_vector_ids},
+                )
+            )
+
+        orphan_entity_vector_ids = sorted(entity_vector_ids - all_entity_ids_from_graph)
+        if orphan_entity_vector_ids:
+            errors.append(
+                ConsistencyIssue(
+                    check="entity_vector_endpoints",
+                    message="Entity vectors exist without matching graph entities.",
+                    details={"orphan_vector_ids": orphan_entity_vector_ids},
+                )
+            )
+
+        relation_vector_ids = set(await self.relation_vector_db.get_all_ids())
+        missing_relation_vector_ids = sorted(all_relation_ids_from_graph - relation_vector_ids)
+        if missing_relation_vector_ids:
+            errors.append(
+                ConsistencyIssue(
+                    check="relation_vector_representations",
+                    message="Graph relations exist without matching relation vectors.",
+                    details={"missing_vector_ids": missing_relation_vector_ids},
+                )
+            )
+
+        orphan_relation_vector_ids = sorted(relation_vector_ids - all_relation_ids_from_graph)
+        if orphan_relation_vector_ids:
+            errors.append(
+                ConsistencyIssue(
+                    check="relation_vector_endpoints",
+                    message="Relation vectors exist without matching graph relations.",
+                    details={"orphan_vector_ids": orphan_relation_vector_ids},
+                )
+            )
+
+        chunks_vdb_ids = await self.chunk_vector_db.get_all_ids()
+
+        # Empty ids means that we didn't vectorize chunks at all, that is valid if we don't want to use naive search.
+        if not chunks_vdb_ids:
+            return ConsistencyReport(errors=errors)
+
+        chunk_vector_ids = set(chunks_vdb_ids)
+        missing_chunk_vector_ids = sorted(all_chunk_ids_from_storage - chunk_vector_ids)
+        if missing_chunk_vector_ids:
+            errors.append(
+                ConsistencyIssue(
+                    check="chunk_vector_representations",
+                    message="Chunks in storage exist without matching chunk vectors.",
+                    details={"missing_vector_ids": missing_chunk_vector_ids},
+                )
+            )
+
+        orphan_chunk_vector_ids = sorted(chunk_vector_ids - all_chunk_ids_from_storage)
+        if orphan_chunk_vector_ids:
+            errors.append(
+                ConsistencyIssue(
+                    check="chunk_vector_endpoints",
+                    message="Chunk vectors exist without matching chunk records.",
+                    details={"orphan_vector_ids": orphan_chunk_vector_ids},
+                )
+            )
+
+        return ConsistencyReport(errors=errors)

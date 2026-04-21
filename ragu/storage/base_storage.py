@@ -80,6 +80,35 @@ class BaseVectorStorage(BaseStorage, ABC):
         """
         ...
 
+    @abstractmethod
+    async def get_all_ids(self) -> List[str]:
+        """
+        Return all stored record IDs.
+
+        :return: List of identifiers currently present in the vector store.
+        """
+        ...
+
+    @abstractmethod
+    async def get_points_by_ids(self, ids: List[str]) -> List[Point | None]:
+        """
+        Fetch stored points by ID.
+
+        :param ids: Record identifiers to retrieve in order.
+        :return: Points aligned with ``ids``; missing IDs mapped to ``None``.
+        """
+        ...
+
+    @abstractmethod
+    async def get_payloads_by_ids(self, ids: List[str]) -> List[Dict | None]:
+        """
+        Fetch stored payloads by ID.
+
+        :param ids: Record identifiers to retrieve in order.
+        :return: Payloads aligned with ``ids``; missing IDs mapped to ``None``.
+        """
+        ...
+
 
 T = TypeVar("T")
 

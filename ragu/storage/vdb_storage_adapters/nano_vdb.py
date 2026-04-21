@@ -1,7 +1,7 @@
 # Based on https://github.com/gusye1234/nano-graphrag/blob/main/nano_graphrag/_storage/vdb_nanovectordb.py
 
 import os
-from typing import Any, List
+from typing import Any, List, Dict
 from typing_extensions import override
 
 import numpy as np
@@ -121,18 +121,6 @@ class NanoVectorDBStorage(BaseVectorStorage):
             )
         return hits
 
-    async def index_start_callback(self):
-        """
-        Pre-index hook for interface compatibility.
-        """
-        pass
-
-    async def query_done_callback(self):
-        """
-        Post-query hook for interface compatibility.
-        """
-        pass
-
     @override
     async def delete(self, ids: List[str], **kwargs: Any) -> None:
         """
@@ -144,6 +132,83 @@ class NanoVectorDBStorage(BaseVectorStorage):
         if not ids:
             return
         self._client.delete(ids)
+
+    @override
+    async def get_all_ids(self) -> List[str]:
+        """
+        Return all record IDs currently stored in NanoVectorDB.
+        """
+        try:
+            _data = getattr(self._client, "_NanoVectorDB__storage", {})
+            return [item["__id__"] for item in _data.get("data", [])]
+        except AttributeError:
+            raise RuntimeError("Seem that NanoVDB are non initialized.")
+
+    @override
+    async def get_points_by_ids(self, ids: List[str]) -> List[Point | None]:
+        """
+        Retrieve stored points by ID, preserving input order.
+
+        :param ids: Record identifiers to fetch.
+        :return: Points aligned with ``ids``; missing IDs mapped to ``None``.
+        """
+        data = self._client.get(ids)
+        points: List[Point | None] = []
+        data_dict: Dict = {}
+
+        try:
+            _data = getattr(self._client, "_NanoVectorDB__storage", {})
+            _matrix: np.ndarray = _data.get("matrix", np.array([]))
+        except AttributeError:
+            raise RuntimeError("Seem that NanoVDB are non initialized.")
+
+        for i, item in enumerate(data):
+            data_dict[item["__id__"]] = {"__vector__": _matrix[i], **item}
+
+        for _id in ids:
+            if _id in data_dict:
+                point = Point(
+                    id=_id,
+                    dense_embedding=data_dict[_id]["__vector__"],
+                    metadata={k: v for k, v in data_dict[_id].items() if k not in {"__id__", "__vector__"}},
+                )
+                points.append(point)
+            else:
+                points.append(None)
+
+        return points
+
+    @override
+    async def get_payloads_by_ids(self, ids: List[str]) -> List[Dict | None]:
+        """
+        Retrieve stored payloads by ID, preserving input order.
+
+        :param ids: Record identifiers to fetch.
+        :return: Payloads aligned with ``ids``; missing IDs mapped to ``None``.
+        """
+        output: List[Dict | None] = []
+        data = self._client.get(ids)
+        data_dict = {item["__id__"]: item for item in data}
+
+        for _id in ids:
+            if _id in data_dict:
+                output.append(data_dict[_id])
+            else:
+                output.append(None)
+
+        return output
+
+    async def index_start_callback(self):
+        """
+        Pre-index hook for interface compatibility.
+        """
+        pass
+
+    async def query_done_callback(self):
+        """
+        Post-query hook for interface compatibility.
+        """
+        pass
 
     async def index_done_callback(self) -> None:
         """

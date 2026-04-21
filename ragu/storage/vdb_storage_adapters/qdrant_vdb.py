@@ -1,7 +1,7 @@
 import asyncio
 import uuid
 from pathlib import Path
-from typing import Any, List, Dict, override, Literal, cast
+from typing import Any, List, Dict, override, Literal
 
 from qdrant_client.conversions.common_types import CollectionInfo, QueryResponse
 from qdrant_client.http.models import FusionQuery, Fusion
@@ -9,7 +9,7 @@ from qdrant_client.http.models import FusionQuery, Fusion
 from pydantic import BaseModel
 from ragu.common.global_parameters import Settings
 from ragu.storage.base_storage import BaseVectorStorage
-from ragu.storage.types import EmbeddingHit, Point
+from ragu.storage.types import EmbeddingHit, Point, SparseEmbedding
 from ragu.common.logger import logger
 
 from qdrant_client import AsyncQdrantClient, models
@@ -334,7 +334,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         if any(has_sparse) and not all(has_sparse):
             raise ValueError("All points in this batch must either have sparse embeddings or not have them.")
 
-        if not self._sparse_mode and has_sparse:
+        if not self._sparse_mode and any(has_sparse):
             raise ValueError(f"Try to insert sparse embeddings, but `sparse_type` parameter is set to None. "
                              f"Please, set `sparse_type` parameter. Possible values: bm25, bm42, splade, custom")
 
@@ -460,6 +460,129 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             points_selector=PointIdsList(points=[self._to_qdrant_point_id(record_id) for record_id in ids]),
             wait=True,
         )
+
+    @override
+    async def get_all_ids(self) -> List[str]:
+        """
+        Return all RAGU record IDs stored in the Qdrant collection.
+        """
+        ids: List[str] = []
+        await self._ensure_collection()
+
+        scroll_offset = None
+        while True:
+            points, scroll_offset = await self._get_client().scroll(
+                collection_name=self.collection_name,
+                limit=1000,
+                offset=scroll_offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+
+            for point in points:
+                payload = dict(getattr(point, "payload", None) or {})
+                record_id = payload.get("__ragu_id__")
+                if record_id is None:
+                    raise ValueError("Qdrant point payload is missing '__ragu_id__'")
+                ids.append(str(record_id))
+
+            if scroll_offset is None:
+                break
+
+        return ids
+
+    @override
+    async def get_payloads_by_ids(self, ids: List[str]) -> List[Dict | None]:
+        """
+        Retrieve stored payloads by RAGU IDs, preserving input order.
+
+        :param ids: Record identifiers to fetch.
+        :return: Payloads aligned with ``ids``; missing IDs mapped to ``None``.
+        """
+        if not ids:
+            return []
+
+        await self._ensure_collection()
+        qdrant_ids = [self._to_qdrant_point_id(record_id) for record_id in ids]
+        records = await self._get_client().retrieve(
+            collection_name=self.collection_name,
+            ids=qdrant_ids,
+            with_vectors=False,
+            with_payload=True,
+        )
+        payloads_by_id = {}
+        for record in records:
+            payload = dict(getattr(record, "payload", None) or {})
+            record_id = payload.pop("__ragu_id__", None)
+            if record_id is None:
+                raise ValueError("Qdrant point payload is missing '__ragu_id__'")
+            payloads_by_id[str(record_id)] = {
+                "__id__": str(record_id),
+                **payload,
+            }
+        return [payloads_by_id.get(record_id) for record_id in ids]
+
+    @override
+    async def get_points_by_ids(self, ids: List[str]) -> List[Point | None]:
+        """
+        Retrieve stored points by RAGU IDs, preserving input order.
+
+        :param ids: Record identifiers to fetch.
+        :return: Points aligned with ``ids``; missing IDs mapped to ``None``.
+        """
+        if not ids:
+            return []
+
+        await self._ensure_collection()
+        qdrant_ids = [self._to_qdrant_point_id(record_id) for record_id in ids]
+        records = await self._get_client().retrieve(
+            collection_name=self.collection_name,
+            ids=qdrant_ids,
+            with_vectors=True,
+            with_payload=True,
+        )
+        points_by_id = {}
+        for record in records:
+            payload = dict(getattr(record, "payload", None) or {})
+            record_id = payload.pop("__ragu_id__", None)
+            if record_id is None:
+                raise ValueError("Qdrant point payload is missing '__ragu_id__'")
+
+            vector = getattr(record, "vector", None)
+            if vector is None:
+                dense_vector = None
+            elif isinstance(vector, dict):
+                dense_vector = vector.get(self.DENSE_VECTOR_NAME)
+            else:
+                dense_vector = vector
+
+            if dense_vector is None:
+                continue
+
+            sparse_embedding = None
+            if self._sparse_mode is not None and isinstance(vector, dict):
+                sparse_vector = vector.get(self._sparse_mode)
+                if sparse_vector is not None:
+                    if isinstance(sparse_vector, dict):
+                        indices = sparse_vector.get("indices")
+                        values = sparse_vector.get("values")
+                    else:
+                        indices = getattr(sparse_vector, "indices", None)
+                        values = getattr(sparse_vector, "values", None)
+
+                    if indices is not None and values is not None:
+                        sparse_embedding = SparseEmbedding(
+                            indices=list(indices),
+                            values=list(values),
+                        )
+
+            points_by_id[record_id] = Point(
+                id=record_id,
+                dense_embedding=dense_vector,
+                sparse_embedding=sparse_embedding,
+                metadata=payload,
+            )
+        return [points_by_id.get(record_id) for record_id in ids]
 
     async def index_start_callback(self):
         """

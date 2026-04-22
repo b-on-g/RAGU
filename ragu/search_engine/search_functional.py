@@ -69,7 +69,7 @@ async def _find_most_related_text_unit_from_entities(
             elif relation.object_id == seed_id:
                 neighbor_ids.append(relation.subject_id)
     neighbor_ids = list(dict.fromkeys(neighbor_ids))
-    neighbors = await knowledge_graph.index.get_entities(neighbor_ids)
+    neighbors = await knowledge_graph.index.get_nodes(neighbor_ids)
 
     all_one_hop_text_units_lookup = {
         neighbor.id : neighbor.source_chunk_id for neighbor in neighbors if neighbor is not None

@@ -12,9 +12,6 @@ Modules overview
 • **Entity**, **Relation** — primary units representing semantic nodes
   and edges within the knowledge graph.
 
-• **EntityEmbedding**, **RelationEmbedding** — hold numeric vector
-  representations used for embedding-based retrieval and similarity search.
-
 • **Community**, **CommunitySummary** — represent clustered subgraphs
   (communities) and their human-readable summaries produced during
   community detection or summarization.
@@ -22,8 +19,6 @@ Modules overview
 
 from typing import List
 from dataclasses import dataclass, field
-
-import numpy as np
 
 from ragu.storage.types import ClusterInfo, Edge, Node
 from ragu.utils.ragu_utils import compute_mdhash_id
@@ -70,20 +65,6 @@ class Entity(Node):
 
 
 @dataclass(slots=True)
-class EntityEmbedding:
-    """
-    Stores vector embeddings for a single entity.
-
-    :param id: ID corresponding to the associated :class:`Entity`.
-    :param name_embedding: Embedding vector for the entity name.
-    :param description_embedding: Embedding vector for the entity description.
-    """
-    id: str
-    name_embedding: np.ndarray | None = None
-    description_embedding: np.ndarray | None = None,
-
-
-@dataclass(slots=True)
 class Relation(Edge):
     """
     Represents a directed relation between two entities.
@@ -121,18 +102,6 @@ class Relation(Edge):
 
     def to_text(self):
         return f"{self.description}"
-
-
-@dataclass(slots=True)
-class RelationEmbedding:
-    """
-    Stores a vector embedding for a relation.
-
-    :param id: ID corresponding to the associated :class:`Relation`.
-    :param embedding: Embedding vector capturing the relation’s semantic meaning.
-    """
-    id: str
-    embedding: np.ndarray | None = None,
 
 
 @dataclass(slots=True)

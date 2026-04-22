@@ -1,21 +1,41 @@
 import time
 from dataclasses import dataclass, field
-from typing import Any, List, Dict
+from typing import Any, Dict, List, TypedDict
 
 from ragu.utils.ragu_utils import FLOATS, compute_mdhash_id, serialize
+
+
+class ClusterInfo(TypedDict):
+    """
+    Represents graph cluster info.
+    """
+    level: int
+    cluster_id: int
 
 
 class Node:
     """
     Base graph node type for storage adapters.
 
-    Subclasses are expected to be dataclasses and define an ``id`` field.
+    Subclasses are expected to be dataclasses and define ``id``,
+    ``source_chunk_id``, and ``clusters`` fields.
     """
 
     id: str
+    source_chunk_id: List[str]
+    clusters: List[ClusterInfo]
 
     def to_dict(self) -> Dict[str, Any]:
+        """
+        Serialize node to dict.
+        """
         return serialize(self)
+    
+    def to_text(self):
+        """
+        Convert node to text representation.
+        """
+        return str(f"{self.id}")
 
 
 class Edge:
@@ -23,15 +43,25 @@ class Edge:
     Base graph edge type for storage adapters.
 
     Subclasses are expected to be dataclasses and define ``id``,
-    ``subject_id``, and ``object_id`` fields.
+    ``subject_id``, ``object_id``, and ``source_chunk_id`` fields.
     """
 
     id: str
     subject_id: str
     object_id: str
+    source_chunk_id: List[str]
 
     def to_dict(self) -> Dict[str, Any]:
+        """
+        Serialize edge to dict.
+        """
         return serialize(self)
+
+    def to_text(self):
+        """
+        Convert edge to text representation.
+        """
+        return str(f"{self.subject_id} - {self.object_id}")
 
 
 DenseEmbedding = FLOATS

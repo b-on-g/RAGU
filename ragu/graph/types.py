@@ -20,19 +20,13 @@ Modules overview
   community detection or summarization.
 """
 
-
+from typing import List
 from dataclasses import dataclass, field
-from typing import List, TypedDict
 
 import numpy as np
 
-from ragu.storage.types import Edge, Node
+from ragu.storage.types import ClusterInfo, Edge, Node
 from ragu.utils.ragu_utils import compute_mdhash_id
-
-
-class ClusterInfo(TypedDict):
-    level: int
-    cluster_id: int  # str or int?
 
 
 @dataclass(slots=True)
@@ -55,7 +49,6 @@ class Entity(Node):
     documents_id: list[str] = field(default_factory=list[str])
     clusters: list[ClusterInfo] = field(default_factory=list[ClusterInfo])
     id: str = 'auto'
-    # if type-hint id as str | None, this will raise type checker errors in many places
 
     def __post_init__(self):
         """
@@ -71,6 +64,9 @@ class Entity(Node):
 
     def __eq__(self, other):
         return self.id == other.id and self.description == other.description
+
+    def to_text(self):
+        return f"{self.entity_name} - {self.description}"
 
 
 @dataclass(slots=True)
@@ -110,7 +106,6 @@ class Relation(Edge):
     relation_strength: int | float = 1.0
     source_chunk_id: list[str] = field(default_factory=list[str])
     id: str = 'auto'
-    # if type-hint id as str | None, this will raise type checker errors in many places
 
     def __post_init__(self):
         """
@@ -123,6 +118,9 @@ class Relation(Edge):
             )
     def __eq__(self, other):
         return self.id == other.id and self.description == other.description
+
+    def to_text(self):
+        return f"{self.description}"
 
 
 @dataclass(slots=True)
@@ -153,7 +151,6 @@ class Community:
     entities: List[Entity]
     relations: List[Relation]
     id: str = 'auto'
-    # if type-hint id as str | None, this will raise type checker errors in many places
 
     def __post_init__(self):
         """

@@ -43,12 +43,12 @@ class GraphRetriever:
         :return: Matching entities ordered by relevance.
         """
         point = await self.build_query_vectors(query)
-        results = await self.knowledge_graph.index.entity_vector_db.query(
+        results = await self.knowledge_graph.index.nodes_vector_db.query(
             point,
             top_k=top_k,
         )
         entity_ids = [result.id for result in results]
-        entities = await self.knowledge_graph.index.get_entities(entity_ids)
+        entities = await self.knowledge_graph.index.get_nodes(entity_ids)
         return [entity for entity in entities if entity is not None]
 
     async def query_relations(self, query: str, top_k: int = 20) -> List[Relation]:
@@ -60,22 +60,22 @@ class GraphRetriever:
         :return: Matching relations ordered by relevance.
         """
         point = await self.build_query_vectors(query)
-        results = await self.knowledge_graph.index.relation_vector_db.query(
+        results = await self.knowledge_graph.index.edges_vector_db.query(
             point,
             top_k=top_k,
         )
         edge_specs: List[EdgeSpec] = [
             (
-                str(result.metadata.get("subject")),
-                str(result.metadata.get("object")),
+                str(result.metadata.get("subject_id")),
+                str(result.metadata.get("object_id")),
                 result.id,
             )
             for result in results
-            if result.metadata.get("subject") and result.metadata.get("object")
+            if result.metadata.get("subject_id") and result.metadata.get("object_id")
         ]
         if not edge_specs:
             return []
-        relations = await self.knowledge_graph.index.get_relations(edge_specs)
+        relations = await self.knowledge_graph.index.get_edges(edge_specs)
         return [relation for relation in relations if relation is not None]
 
     async def find_similar_entities(self, entity: Entity, top_k: int = 10) -> List[Entity]:
@@ -108,7 +108,7 @@ class GraphRetriever:
         :return: Ranked chunk hits with metadata.
         """
         point = await self.build_query_vectors(query)
-        return await self.knowledge_graph.index.chunk_vector_db.query(
+        return await self.knowledge_graph.index.chunks_vector_db.query(
             point=point,
             top_k=top_k,
         )

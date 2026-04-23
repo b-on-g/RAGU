@@ -12,7 +12,6 @@ from ragu.models.scorer import Scorer
 from ragu.models.sparse_embedder import SparseEmbedder
 from ragu.search_engine.base_engine import BaseEngine
 from ragu.search_engine.types import NaiveSearchResult
-from ragu.utils.token_truncation import TokenTruncation
 
 from ragu.common.prompts.prompt_storage import RAGUInstruction
 from ragu.common.prompts.messages import ChatMessages, render
@@ -54,12 +53,14 @@ class NaiveSearchEngine(BaseEngine):
         :param language: Default output language
         """
         _PROMPTS_NAMES = ["naive_search"]
-        super().__init__(llm=llm, prompts=_PROMPTS_NAMES, *args, **kwargs)
-
-        self.truncation = TokenTruncation(
-            tokenizer_model,
-            tokenizer_backend,
-            max_context_length,
+        super().__init__(
+            llm=llm,
+            prompts=_PROMPTS_NAMES,
+            max_context_length=max_context_length,
+            tokenizer_backend=tokenizer_backend,
+            tokenizer_model=tokenizer_model,
+            *args,
+            **kwargs,
         )
 
         self.graph = knowledge_graph
@@ -70,7 +71,6 @@ class NaiveSearchEngine(BaseEngine):
             reranker=reranker,
         )
         self.reranker = reranker
-        self.llm = llm
         self.language = language if language else Settings.language
 
     async def a_search(

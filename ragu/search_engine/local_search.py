@@ -20,7 +20,6 @@ from ragu.search_engine.search_functional import (
     _rerank_items,
 )
 from ragu.search_engine.types import LocalSearchResult
-from ragu.utils.token_truncation import TokenTruncation
 
 from ragu.common.prompts.prompt_storage import RAGUInstruction
 from ragu.common.prompts.messages import ChatMessages, render
@@ -68,12 +67,14 @@ class LocalSearchEngine(BaseEngine):
         :param language: Default output language (fed into prompt template).
         """
         _PROMPTS_NAMES = ["local_search"]
-        super().__init__(llm=llm, prompts=_PROMPTS_NAMES, *args, **kwargs)
-
-        self.truncation = TokenTruncation(
-            tokenizer_model,
-            tokenizer_backend,
-            max_context_length,
+        super().__init__(
+            llm=llm,
+            prompts=_PROMPTS_NAMES,
+            max_context_length=max_context_length,
+            tokenizer_backend=tokenizer_backend,
+            tokenizer_model=tokenizer_model,
+            *args,
+            **kwargs,
         )
 
         self.knowledge_graph = knowledge_graph

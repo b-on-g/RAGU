@@ -8,7 +8,6 @@ from ragu.common.global_parameters import Settings
 from ragu.models.llm import LLM
 from ragu.search_engine.base_engine import BaseEngine
 from ragu.search_engine.types import MixSearchResult
-from ragu.utils.token_truncation import TokenTruncation
 
 from ragu.common.prompts.prompt_storage import RAGUInstruction
 from ragu.common.prompts.messages import ChatMessages, render
@@ -50,7 +49,15 @@ class MixSearchEngine(BaseEngine):
         :param language: Default output language.
         """
         prompts = ["mix_search_context", "mix_search"]
-        super().__init__(llm=llm, prompts=prompts, *args, **kwargs)
+        super().__init__(
+            llm=llm,
+            prompts=prompts,
+            max_context_length=max_context_length,
+            tokenizer_backend=tokenizer_backend,
+            tokenizer_model=tokenizer_model,
+            *args,
+            **kwargs,
+        )
 
         self.engines = engines
         if not self.engines:
@@ -58,11 +65,6 @@ class MixSearchEngine(BaseEngine):
 
         self.allow_partial_failures = allow_partial_failures
         self.language = language if language else Settings.language
-        self.truncation = TokenTruncation(
-            tokenizer_model,
-            tokenizer_backend,
-            max_context_length,
-        )
 
     async def _search_all(
         self,

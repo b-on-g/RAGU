@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -13,6 +13,7 @@ from ragu.search_engine.types import (
     NaiveSearchResult,
 )
 from ragu.utils.ragu_utils import always_get_an_event_loop
+from ragu.utils.token_truncation import TokenTruncation
 
 
 class BaseEngine(RaguGenerativeModule, ABC):
@@ -23,7 +24,15 @@ class BaseEngine(RaguGenerativeModule, ABC):
     (a_query method) on top of a knowledge graph.
     """
 
-    def __init__(self, llm: LLM, *args: Any, **kwargs: Any):
+    def __init__(
+        self,
+        llm: LLM,
+        *args: Any,
+        max_context_length: int = 30_000,
+        tokenizer_backend: Literal["tiktoken", "local"] = "tiktoken",
+        tokenizer_model: str = "gpt-4",
+        **kwargs: Any,
+    ):
         """
         Initialize engine with an LLM client.
 
@@ -31,6 +40,11 @@ class BaseEngine(RaguGenerativeModule, ABC):
         """
         super().__init__(*args, **kwargs)
         self.llm = llm
+        self.truncation = TokenTruncation(
+            tokenizer_model,
+            tokenizer_backend,
+            max_context_length,
+        )
 
     @abstractmethod
     async def a_search(

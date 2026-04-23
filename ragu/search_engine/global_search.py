@@ -9,7 +9,6 @@ from ragu.graph.knowledge_graph import KnowledgeGraph
 from ragu.models.llm import LLM
 from ragu.search_engine.base_engine import BaseEngine
 from ragu.search_engine.types import GlobalSearchResult
-from ragu.utils.token_truncation import TokenTruncation
 
 from ragu.common.prompts.prompt_storage import RAGUInstruction
 from ragu.common.prompts.messages import ChatMessages, render
@@ -45,17 +44,18 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
         :param tokenizer_model: Model name for tokenizer calibration (default: ``"gpt-4"``).
         """
         _PROMPTS = ["global_search_context", "global_search"]
-        super().__init__(llm=llm, prompts=_PROMPTS, *args, **kwargs)
+        super().__init__(
+            llm=llm,
+            prompts=_PROMPTS,
+            max_context_length=max_context_length,
+            tokenizer_backend=tokenizer_backend,
+            tokenizer_model=tokenizer_model,
+            *args,
+            **kwargs,
+        )
 
-        self.llm = llm
         self.knowledge_graph = knowledge_graph
         self.language = language if language else Settings.language
-
-        self.truncation = TokenTruncation(
-            tokenizer_model,
-            tokenizer_backend,
-            max_context_length,
-        )
 
     async def a_search(self, query: str, *args, **kwargs) -> GlobalSearchResult:
         """

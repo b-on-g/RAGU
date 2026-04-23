@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, List
+from typing import Any, List, Literal
 
 from pydantic import BaseModel
 
@@ -29,7 +29,7 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
         llm: LLM,
         knowledge_graph: KnowledgeGraph,
         max_context_length: int = 30_000,
-        tokenizer_backend: str = "tiktoken",
+        tokenizer_backend: Literal["tiktoken", "local"] = "tiktoken",
         tokenizer_model: str = "gpt-4",
         language: str | None = None,
         *args: Any,

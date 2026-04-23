@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, List
+from typing import Any, List, Literal
 from typing_extensions import override
 
 from pydantic import BaseModel
@@ -31,7 +31,7 @@ class MixSearchEngine(BaseEngine):
         engines: List[BaseEngine],
         allow_partial_failures: bool = True,
         max_context_length: int = 30_000,
-        tokenizer_backend: str = "tiktoken",
+        tokenizer_backend: Literal["tiktoken", "local"] = "tiktoken",
         tokenizer_model: str = "gpt-4",
         language: str | None = None,
         *args: Any,

@@ -1,4 +1,4 @@
-from typing import Any, Optional, List
+from typing import Any, Optional, List, Literal
 
 from pydantic import BaseModel
 
@@ -34,7 +34,7 @@ class NaiveSearchEngine(BaseEngine):
         sparse_embedder: SparseEmbedder | None = None,
         reranker: Optional[Scorer] = None,
         max_context_length: int = 30_000,
-        tokenizer_backend: str = "tiktoken",
+        tokenizer_backend: Literal["tiktoken", "local"] = "tiktoken",
         tokenizer_model: str = "gpt-4",
         language: str | None = None,
         *args: Any,

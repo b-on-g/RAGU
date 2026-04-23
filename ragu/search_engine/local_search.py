@@ -1,5 +1,5 @@
 # Partially based on https://github.com/gusye1234/nano-graphrag/blob/main/nano_graphrag/
-from typing import Any, List
+from typing import Any, List, Literal
 from typing_extensions import override
 
 from pydantic import BaseModel
@@ -48,7 +48,7 @@ class LocalSearchEngine(BaseEngine):
         sparse_embedder: SparseEmbedder | None = None,
         reranker: Scorer | None = None,
         max_context_length: int = 30_000,
-        tokenizer_backend: str = "tiktoken",
+        tokenizer_backend: Literal["tiktoken", "local"] = "tiktoken",
         tokenizer_model: str = "gpt-4",
         language: str | None = None,
         *args: Any,

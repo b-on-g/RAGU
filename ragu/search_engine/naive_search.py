@@ -90,32 +90,12 @@ class NaiveSearchEngine(BaseEngine):
                              If None, keeps all reranked chunks. Used only when reranker is set.
         :return: NaiveSearchResult with retrieved chunks, scores, and document ids.
         """
-        results = await self.retriever.query_chunk_hits(query, top_k=top_k)
+        chunks, scores = await self.retriever.query_chunks(query, top_k=top_k)
 
-        if not results:
+        if not scores:
             return NaiveSearchResult(chunks=[], scores=[], documents_id=[])
 
-        chunk_ids = [r.id for r in results]
-        distances = [r.distance for r in results]
-
-        chunk_data_list = await self.graph.index.chunks_kv_storage.get_by_ids(chunk_ids)
-
-        chunks: List[Chunk] = []
-        valid_distances: List[float] = []
-        for chunk_id, chunk_data, distance in zip(chunk_ids, chunk_data_list, distances):
-            if chunk_data is not None:
-                chunk = Chunk(
-                    content=chunk_data.get("content", ""),
-                    chunk_order_idx=chunk_data.get("chunk_order_idx", 0),
-                    doc_id=chunk_data.get("doc_id", ""),
-                    num_tokens=chunk_data.get("num_tokens"),
-                )
-                # Override the auto-generated id with the stored one
-                setattr(chunk, "id", chunk_id)
-                chunks.append(chunk)
-                valid_distances.append(distance)
-
-        scores = valid_distances
+        scores = [r.distance for r in scores]
         if self.reranker is not None and chunks:
             chunk_contents = [c.content for c in chunks]
             rerank_results = await self.reranker.score(query, chunk_contents)

@@ -96,7 +96,7 @@ class LocalSearchEngine(BaseEngine):
         :param top_k: Number of top entities to retrieve from the entity vector DB.
         :return: LocalSearchResult containing entities, relations, summaries, chunks, and document ids.
         """
-        entities = await self.retriever.query_entities(query, top_k=top_k)
+        entities, _ = await self.retriever.query_entities(query, top_k=top_k)
 
         relations = await _find_most_related_edges_from_entities(entities, self.knowledge_graph)
         relations = [relation for relation in relations if relation is not None]

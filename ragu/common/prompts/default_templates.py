@@ -131,7 +131,6 @@ Query: {{ query }}
 Context: {{ context }}
 
 Provide the answer in the following language: {{ language }}
-Return the result as valid JSON matching the provided schema.
 """
 
 DEFAULT_RESPONSE_ONLY_PROMPT = """
@@ -146,7 +145,6 @@ Query: {{ query }}
 Context: {{ context }}
 
 Provide the answer in the following language: {{ language }}
-Return the result as valid JSON matching the provided schema.
 """
 
 DEFAULT_MIX_SEARCH_PROMPT = """
@@ -166,7 +164,6 @@ Engine {{ section_label }}s:
 {{ context }}
 
 Provide the answer in the following language: {{ language }}
-Return the result as valid JSON matching the provided schema.
 """
 
 DEFAULT_MIX_SEARCH_CONTEXT_PROMPT = """

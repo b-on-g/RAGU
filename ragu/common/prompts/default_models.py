@@ -123,15 +123,6 @@ class GlobalSearchContextModel(BaseModel):
     rating: confloat(ge=0, le=10) = Field(..., description="Relevance rating of the context 0–10")
 
 
-class GlobalSearchResponseModel(BaseModel):
-    reasoning: str = Field(..., description="Reasoning about context relevance and the final answer")
-    response: str = Field(..., description="Final answer")
-
-
-class DefaultResponseModel(BaseModel):
-    response: str = Field(..., description="Answer based on the provided context; if unknown, explicitly state so")
-
-
 class EntityDescriptionModel(BaseModel):
     entity_name: str = Field(description="Entity name")
     description: str = Field(description="Summarized description")

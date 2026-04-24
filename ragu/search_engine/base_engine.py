@@ -15,7 +15,11 @@ ResultT = TypeVar("ResultT")
 @dataclass(slots=True)
 class SearchEngineRetrieve(ABC, Generic[ResultT]):
     """
-    Base response class for retrieval.
+    Base container for search-only results.
+
+    ``result`` stores the engine-specific retrieval payload, while ``metrics``
+    stores optional diagnostics such as relevance scores, ranks, timings, or
+    backend-specific retrieval metadata.
     """
     query: str
     result: ResultT
@@ -24,7 +28,7 @@ class SearchEngineRetrieve(ABC, Generic[ResultT]):
     @abstractmethod
     def to_text(self) -> str:
         """
-        How to format the retrieved result.
+        Render the retrieved context as text suitable for prompt injection.
         """
         ...
 
@@ -35,7 +39,10 @@ class SearchEngineRetrieve(ABC, Generic[ResultT]):
 @dataclass(slots=True)
 class SearchEngineResponse:
     """
-    Default response for search engine.
+    Response from search engine.
+
+    ``response`` is the generated answer, ``retrieval`` is the context used to
+    produce it, and ``payload`` carries optional engine-specific metadata.
     """
     query: str
     response: str | BaseModel
@@ -66,9 +73,12 @@ class BaseEngine(RaguGenerativeModule, ABC):
         **kwargs: Any,
     ):
         """
-        Initialize engine with an LLM client.
+        Initialize an engine with an LLM and context truncation settings.
 
-        :param client: LLM client.
+        :param llm: LLM used by concrete engines for answer generation.
+        :param max_context_length: Maximum context length after token truncation.
+        :param tokenizer_backend: Tokenizer backend used for truncation.
+        :param tokenizer_model: Tokenizer model name used by the backend.
         """
         super().__init__(*args, **kwargs)
         self.llm = llm
@@ -86,17 +96,17 @@ class BaseEngine(RaguGenerativeModule, ABC):
         **kwargs,
     ) -> SearchEngineRetrieve:
         """
-        Retrieve context relevant to a query.
+        Retrieve context relevant to a query without generating an answer.
 
         :param query: Input query string.
-        :return: Engine-specific retrieval result payload.
+        :return: Engine-specific retrieval container with result payload and metrics.
         """
         pass
 
     @abstractmethod
     async def a_query(self, query: str, *args, **kwargs) -> SearchEngineResponse:
         """
-        Execute full query flow and return answer.
+        Execute retrieval and answer generation for a query.
 
         :param query: Input query string.
         :return: Structured search result containing the final answer and retrieval details.
@@ -105,7 +115,7 @@ class BaseEngine(RaguGenerativeModule, ABC):
 
     async def query(self, query: str, *args, **kwargs) -> SearchEngineResponse:
         """
-        Synchronous wrapper for ``a_query``.
+        Delegate to ``a_query`` through the shared event-loop helper.
 
         :param query: Input query string.
         :return: Structured search result containing the final answer and retrieval details.
@@ -122,10 +132,10 @@ class BaseEngine(RaguGenerativeModule, ABC):
         **kwargs,
     ) -> SearchEngineRetrieve:
         """
-        Synchronous wrapper for ``a_search``.
+        Delegate to ``a_search`` through the shared event-loop helper.
 
         :param query: Input query string.
-        :return: Engine-specific retrieval result payload.
+        :return: Engine-specific retrieval container with result payload and metrics.
         """
         loop = always_get_an_event_loop()
         return loop.run_until_complete(

@@ -33,6 +33,13 @@ from ragu.search_engine.search_functional import (
 
 @dataclass(slots=True)
 class LocalSearchResult:
+    """
+    Retrieved graph-local context for a query.
+
+    Entities are the seed retrieval results. Relations, summaries, and chunks
+    are derived from those entities and optionally reranked. ``documents_id``
+    contains unique source document IDs from the final entity set.
+    """
     entities: list[Entity] = field(default_factory=list)
     relations: list[Relation] = field(default_factory=list)
     summaries: list[Any] = field(default_factory=list)
@@ -42,9 +49,19 @@ class LocalSearchResult:
 
 @dataclass(slots=True)
 class LocalSearchRetrieve(SearchEngineRetrieve[LocalSearchResult]):
+    """
+    Retrieval container returned by :class:`LocalSearchEngine`.
+
+    Metrics use ``metrics["entities"]`` with one entry per final entity
+    containing ``id``, ``name``, zero-based ``rank``, and vector
+    ``relevance_score``.
+    """
     result: LocalSearchResult
 
     def to_text(self) -> str:
+        """
+        Render entities, relations, optional summaries, and optional chunks.
+        """
         template = Template(dedent("""
             **Entities**
             Entity, entity type, entity description
@@ -144,7 +161,8 @@ class LocalSearchEngine(BaseEngine):
 
         :param query: Input query string.
         :param top_k: Number of top entities to retrieve from the entity vector DB.
-        :return: LocalSearchResult containing entities, relations, summaries, chunks, and document ids.
+        :return: ``LocalSearchRetrieve`` containing graph-local context and
+                 entity relevance metrics.
         """
         entities, entity_hits = await self.retriever.query_entities(query, top_k=top_k)
         entity_scores_by_id = {
@@ -227,9 +245,10 @@ class LocalSearchEngine(BaseEngine):
 
         :param query: User query in natural language.
         :param top_k: Number of entities to retrieve into context.
-        :param use_summary: Whether to use summary or not.
-        :param use_chunks: Whether to use chunks or not.
-        :return: Generated answer as a string or Pydantic model when a response schema is set.
+        :param use_summary: Whether community summaries are included in the generated context.
+        :param use_chunks: Whether source chunks are included in the generated context.
+        :return: ``SearchEngineResponse`` containing the generated answer and
+                 the ``LocalSearchRetrieve`` used as context.
         """
         context: LocalSearchRetrieve = await self.a_search(query, top_k)
 

@@ -22,6 +22,13 @@ from ragu.common.prompts.messages import ChatMessages, render
 
 @dataclass(slots=True)
 class NaiveSearchResult:
+    """
+    Retrieved chunk payload for naive vector search.
+
+    ``chunks`` and ``scores`` are aligned by index after optional reranking and
+    truncation by ``rerank_top_k``. ``documents_id`` contains unique document IDs
+    present in the final chunk list.
+    """
     chunks: list[Chunk] = field(default_factory=list)
     scores: list[float] = field(default_factory=list)
     documents_id: list[str] = field(default_factory=list)
@@ -29,9 +36,18 @@ class NaiveSearchResult:
 
 @dataclass(slots=True)
 class NaiveSearchRetrieve(SearchEngineRetrieve[NaiveSearchResult]):
+    """
+    Retrieval container returned by :class:`NaiveSearchEngine`.
+
+    Metrics use ``metrics["chunks"]`` with one entry per final chunk containing
+    ``id``, zero-based ``rank``, and retrieval or reranker ``score``.
+    """
     result: NaiveSearchResult
 
     def to_text(self) -> str:
+        """
+        Render retrieved chunks and aligned scores for the answer prompt.
+        """
         template = Template(dedent("""
             **Retrieved Chunks**
             {%- for chunk, score in zip(result.chunks, result.scores) %}
@@ -113,7 +129,8 @@ class NaiveSearchEngine(BaseEngine):
         :param top_k: Number of top chunks to retrieve initially.
         :param rerank_top_k: Number of chunks to keep after reranking.
                              If None, keeps all reranked chunks. Used only when reranker is set.
-        :return: NaiveSearchResult with retrieved chunks, scores, and document ids.
+        :return: ``NaiveSearchRetrieve`` with retrieved chunks, aligned scores,
+                 document IDs, and chunk rank metrics.
         """
         chunks, scores = await self.retriever.query_chunks(query, top_k=top_k)
 
@@ -169,8 +186,8 @@ class NaiveSearchEngine(BaseEngine):
         :param query: User query in natural language.
         :param top_k: Number of chunks to search initially (default: 20).
         :param rerank_top_k: Number of chunks to use after reranking (default: None = use all).
-        :return: Generated answer as a string or Pydantic model when a response schema is set.
-        :rtype: str | BaseModel
+        :return: ``SearchEngineResponse`` containing the generated answer and
+                 the ``NaiveSearchRetrieve`` used as context.
         """
         context: NaiveSearchRetrieve = await self.a_search(query, top_k, rerank_top_k)
         truncated_context: str = self.truncation(str(context))

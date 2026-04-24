@@ -27,6 +27,11 @@ class QueryPlanEngine(BaseEngine):
     """
 
     def __init__(self, engine: BaseEngine, *args, **kwargs):
+        """
+        Initialize a query planner around an existing search engine.
+
+        :param engine: Engine used to answer each planned subquery.
+        """
         _PROMPTS_NAMES = ["query_decomposition", "query_rewrite"]
         super().__init__(llm=engine.llm, prompts=_PROMPTS_NAMES, *args, **kwargs)
         self.engine: BaseEngine = engine
@@ -65,8 +70,8 @@ class QueryPlanEngine(BaseEngine):
         to the rewrite prompt.
 
         :param subquery: The subquery to rewrite.
-        :param context: Mapping of {subquery_id -> answer} accumulated so far.
-        :return: Rewritten, self-contained query string.
+        :param context: Mapping of subquery ID to prior ``SearchEngineResponse``.
+        :return: Copy of ``subquery`` with a rewritten, self-contained query.
         """
         dep_context = {k: v for k, v in context.items() if k in subquery.depends_on}
 
@@ -96,7 +101,7 @@ class QueryPlanEngine(BaseEngine):
 
         :param subquery: The subquery to execute.
         :param context: Mapping of {subquery_id -> answer} for dependency injection.
-        :return: Answer string or Pydantic model for this subquery.
+        :return: Tuple containing the possibly rewritten subquery and its full response.
         """
         if subquery.depends_on:
             subquery = await self._rewrite_subquery(subquery, context)
@@ -120,8 +125,9 @@ class QueryPlanEngine(BaseEngine):
         by injecting answers from their prerequisite subqueries.
 
         :param query: The complex natural-language query to answer.
-        :return: Pydantic model instance when a response schema is set, otherwise a plain string.
-        :rtype: str | BaseModel
+        :return: ``SearchEngineResponse`` whose ``response`` is the final
+                 subquery answer, ``retrieval`` is the final subquery retrieval,
+                 and ``payload`` contains all subquery responses by ID.
         """
         subqueries = await self.process_query(query)
         ordered = _topological_sort(subqueries)
@@ -144,11 +150,11 @@ class QueryPlanEngine(BaseEngine):
     @override
     async def a_search(self, query, *args, **kwargs):
         """
-        Perform a search using the underlying engine.
+        Delegate search directly to the underlying engine.
 
         :param query: The search query.
         :param args: Additional positional arguments passed to the underlying engine.
         :param kwargs: Additional keyword arguments passed to the underlying engine.
-        :return: Search results from the underlying engine.
+        :return: Retrieval container returned by the underlying engine.
         """
         return await self.engine.a_search(query, *args, **kwargs)

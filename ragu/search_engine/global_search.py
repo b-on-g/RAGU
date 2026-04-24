@@ -20,14 +20,28 @@ from ragu.common.prompts.messages import ChatMessages, render
 
 @dataclass(slots=True)
 class GlobalSearchResult:
+    """
+    Ranked community-level insights selected for a global query.
+
+    Each insight is expected to contain at least a ``response`` and ``rating``
+    field as produced by the global-search context prompt.
+    """
     insights: list[Any] = field(default_factory=list)
 
 
 @dataclass(slots=True)
 class GlobalSearchRetrieve(SearchEngineRetrieve[GlobalSearchResult]):
+    """
+    Retrieval container returned by :class:`GlobalSearchEngine`.
+
+    Metrics include per-insight ratings after filtering and sorting.
+    """
     result: GlobalSearchResult
 
     def to_text(self) -> str:
+        """
+        Render selected community insights for final answer synthesis.
+        """
         template = Template(dedent("""
             {%- for insight in result.insights %}
             {{ loop.index }}. Insight: {{ insight.response }}, rating: {{ insight.rating }}
@@ -59,11 +73,12 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
         """
         Initialize a new `GlobalSearchEngine`.
 
-        :param client: Language model client for generation.
+        :param llm: Language model client for meta-evaluation and final answer generation.
         :param knowledge_graph: Knowledge graph providing access to community-level summaries.
         :param max_context_length: Maximum number of tokens allowed in the truncated context.
         :param tokenizer_backend: Tokenizer backend used for token counting (default: ``"tiktoken"``).
         :param tokenizer_model: Model name for tokenizer calibration (default: ``"gpt-4"``).
+        :param language: Default output language (fed into prompt templates).
         """
         _PROMPTS = ["global_search_context", "global_search"]
         super().__init__(
@@ -88,7 +103,8 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
         concatenation of the top relevant community insights.
 
         :param query: The input natural language query.
-        :return: Concatenated responses from the top-rated communities.
+        :return: ``GlobalSearchRetrieve`` containing positively rated insights
+                 sorted by descending rating.
         """
 
         communities_ids = await self.knowledge_graph.index.community_summary_kv_storage.all_keys()
@@ -121,7 +137,8 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
 
         :param query: The user query used to assess community relevance.
         :param context: A list of community summary texts to evaluate.
-        :return: A list of structured responses with fields such as ``response`` and ``rating``.
+        :return: List of structured response dictionaries with fields such as
+                 ``response`` and ``rating``.
         """
         instruction: RAGUInstruction = self.get_prompt("global_search_context")
 
@@ -150,7 +167,8 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
         - Generates a final global answer.
 
         :param query: The natural language query from the user.
-        :return: Generated answer as a string or Pydantic model when a response schema is set.
+        :return: ``SearchEngineResponse`` containing the generated answer and
+                 the ``GlobalSearchRetrieve`` used as context.
         """
         context = await self.a_search(query)
         truncated_context: str = self.truncation(str(context))
@@ -175,4 +193,3 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
             retrieval=context,
             payload={}
         )
-

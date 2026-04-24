@@ -15,14 +15,29 @@ from ragu.common.prompts.messages import ChatMessages, render
 
 @dataclass(slots=True)
 class MixSearchResult:
+    """
+    Aggregated child-engine outputs.
+
+    ``results`` contains either retrieval containers from child ``a_search``
+    calls or full ``SearchEngineResponse`` objects from child ``a_query`` calls,
+    depending on the synthesis mode.
+    """
     results: list[SearchEngineRetrieve[Any]] | list[SearchEngineResponse] = field(default_factory=list)
 
 
 @dataclass(slots=True)
 class MixSearchRetrieve(SearchEngineRetrieve[MixSearchResult]):
+    """
+    Retrieval container returned by :class:`MixSearchEngine`.
+
+    Metrics are currently empty; child-engine metrics remain available inside each entry.
+    """
     result: MixSearchResult
 
     def to_text(self) -> str:
+        """
+        Render each child engine result as a separate context section.
+        """
         template = Template(dedent("""
             {%- for retrieve in result.results %}
             **Engine {{ loop.index }} Context**
@@ -61,7 +76,7 @@ class MixSearchEngine(BaseEngine):
         :param llm: LLM used to generate the final synthesized answer.
         :param engines: Ordered list of child engines used for retrieval or answer ensembling.
         :param allow_partial_failures: Whether to tolerate failures from individual child engines.
-                                       Failed engines yield ``None`` in the ordered result list.
+                                       Failed engines are omitted from the result list.
         :param max_context_length: Max tokens allowed for the synthesized context after truncation.
         :param tokenizer_backend: Tokenizer backend used for token truncation.
         :param tokenizer_model: Model name used by the tokenizer backend.
@@ -95,8 +110,9 @@ class MixSearchEngine(BaseEngine):
         Execute ``a_search`` on each child engine.
 
         :param query: Input query string.
-        :return: Ordered list of per-engine search contexts. Failed engines return ``None`` when
-                 ``allow_partial_failures=True``.
+        :return: Ordered list of successful per-engine search contexts. Failed
+                 engines are omitted when ``allow_partial_failures=True``.
+        :raises RuntimeError: If every child engine fails.
         """
         tasks = [
             engine.a_search(query, *args, **kwargs)
@@ -127,8 +143,9 @@ class MixSearchEngine(BaseEngine):
         Execute ``a_query`` on each child engine.
 
         :param query: Input query string.
-        :return: Ordered list of per-engine answers. Failed engines return ``None`` when
-                 ``allow_partial_failures=True``.
+        :return: Ordered list of successful per-engine answers. Failed engines
+                 are omitted when ``allow_partial_failures=True``.
+        :raises RuntimeError: If every child engine fails.
         """
         tasks = [
             engine.a_query(query, *args, **kwargs)
@@ -150,14 +167,13 @@ class MixSearchEngine(BaseEngine):
         return contexts
 
     @override
-    async def a_search(self, query: str, *args: Any, **kwargs: Any) -> SearchEngineRetrieve:
+    async def a_search(self, query: str, *args: Any, **kwargs: Any) -> MixSearchRetrieve:
         """
         Retrieve raw contexts from all child engines.
 
         :param query: Input query string.
-        :return: Ordered list of per-engine search contexts matching the engine order passed to
-                 the constructor. Failed engines are represented as ``None`` when partial failures
-                 are enabled.
+        :return: ``MixSearchRetrieve`` containing successful child retrieval
+                 contexts in engine order.
         """
         results = await self._search_all(query, *args, **kwargs)
 
@@ -188,7 +204,8 @@ class MixSearchEngine(BaseEngine):
         :param query: Input query string.
         :param ensemble_responses: Whether to ensemble child-engine answers instead of child-engine
                                    search contexts.
-        :return: Generated answer as a string or Pydantic model when a response schema is set.
+        :return: ``SearchEngineResponse`` containing the synthesized answer and
+                 the child contexts or responses used for synthesis.
         """
         results = await (
             self._query_all(query, *args, **kwargs)

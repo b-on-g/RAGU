@@ -1,9 +1,10 @@
-from typing import List, Dict
+from typing import List, Dict, Tuple
+from typing_extensions import override
 
 from pydantic import BaseModel
 
 from ragu.common.prompts.default_models import SubQuery, QueryPlan, RewriteQuery
-from ragu.search_engine.base_engine import BaseEngine
+from ragu.search_engine.base_engine import BaseEngine, SearchEngineResponse, SearchEngineRetrieve
 from ragu.search_engine.search_functional import _topological_sort
 
 from ragu.common.prompts.prompt_storage import RAGUInstruction
@@ -49,14 +50,14 @@ class QueryPlanEngine(BaseEngine):
         )
         rendered = rendered_list[0]
 
-        response: List[QueryPlan] = await self.engine.llm.chat_completion(    # type: ignore
+        response: QueryPlan = await self.engine.llm.chat_completion(    # type: ignore
             rendered.to_openai(),
             output_schema=instruction.pydantic_model,
         )
 
         return response.subqueries
 
-    async def _rewrite_subquery(self, subquery: SubQuery, context: Dict[str, str]) -> SubQuery:
+    async def _rewrite_subquery(self, subquery: SubQuery, context: Dict[str, SearchEngineResponse]) -> SubQuery:
         """
         Rewrite a subquery by injecting answers from its dependency subqueries.
 
@@ -85,7 +86,11 @@ class QueryPlanEngine(BaseEngine):
         rewritten = response.query if isinstance(response, RewriteQuery) else response
         return subquery.model_copy(update={"query": rewritten})
 
-    async def _answer_subquery(self, subquery: SubQuery, context: Dict[str, str]) -> str:
+    async def _answer_subquery(
+            self,
+            subquery: SubQuery,
+            context: Dict[str, SearchEngineResponse]
+    ) -> Tuple[SubQuery, SearchEngineResponse]:
         """
         Execute a single subquery, rewriting it first if it has dependencies.
 
@@ -98,9 +103,10 @@ class QueryPlanEngine(BaseEngine):
 
         result = await self.engine.a_query(subquery.query)
 
-        return result
+        return subquery, result
 
-    async def a_query(self, query: str) -> str | BaseModel:
+    @override
+    async def a_query(self, query: str, *args, **kwargs) -> SearchEngineResponse:
         """
         Execute a complex query using the plan-and-execute pipeline.
 
@@ -120,13 +126,22 @@ class QueryPlanEngine(BaseEngine):
         subqueries = await self.process_query(query)
         ordered = _topological_sort(subqueries)
 
-        context: Dict[str, str | BaseModel] = {}
+        context: Dict[str,  SearchEngineResponse] = {}
+        retrieve: Dict[str, SearchEngineRetrieve] = {}
         for subquery in ordered:
-            answer = await self._answer_subquery(subquery, context)
-            context[subquery.id] = answer
+            rewritten_subquery, response = await self._answer_subquery(subquery, context)
+            context[subquery.id] = response
+            retrieve[subquery.id] = response.retrieval
 
-        return context[ordered[-1].id]
+        return SearchEngineResponse(
+            query=query,
+            response=context[ordered[-1].id].response,
+            retrieval=retrieve[ordered[-1].id],
+            payload=context,
+        )
 
+    # TODO: maybe it is good idea to refactor this method so it will returns list of 'subcontexts' for every subquery.
+    @override
     async def a_search(self, query, *args, **kwargs):
         """
         Perform a search using the underlying engine.

@@ -1,17 +1,39 @@
 import asyncio
+from dataclasses import field, dataclass
+from textwrap import dedent
 from typing import Any, List, Literal
 
-from pydantic import BaseModel
+from jinja2 import Template
 
 from ragu.common.base import RaguGenerativeModule
 from ragu.common.global_parameters import Settings
 from ragu.graph.knowledge_graph import KnowledgeGraph
 from ragu.models.llm import LLM
-from ragu.search_engine.base_engine import BaseEngine
-from ragu.search_engine.types import GlobalSearchResult
-
+from ragu.search_engine.base_engine import (
+    BaseEngine,
+    SearchEngineRetrieve,
+    SearchEngineResponse
+)
 from ragu.common.prompts.prompt_storage import RAGUInstruction
 from ragu.common.prompts.messages import ChatMessages, render
+
+
+@dataclass(slots=True)
+class GlobalSearchResult:
+    insights: list[Any] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class GlobalSearchRetrieve(SearchEngineRetrieve[GlobalSearchResult]):
+    result: GlobalSearchResult
+
+    def to_text(self) -> str:
+        template = Template(dedent("""
+            {%- for insight in result.insights %}
+            {{ loop.index }}. Insight: {{ insight.response }}, rating: {{ insight.rating }}
+            {%- endfor %}
+        """))
+        return template.render(result=self.result)
 
 
 class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
@@ -57,7 +79,7 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
         self.knowledge_graph = knowledge_graph
         self.language = language if language else Settings.language
 
-    async def a_search(self, query: str, *args, **kwargs) -> GlobalSearchResult:
+    async def a_search(self, query: str, *args, **kwargs) -> GlobalSearchRetrieve:
         """
         Perform a global semantic search across all communities in the knowledge graph.
 
@@ -78,7 +100,16 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
         responses = [r for r in responses if int(r.get("rating", 0)) > 0]
         responses = sorted(responses, key=lambda x: int(x.get("rating", 0)), reverse=True)
 
-        return GlobalSearchResult(responses)
+        return GlobalSearchRetrieve(
+            query=query,
+            result=GlobalSearchResult(
+                insights=responses,
+            ),
+            metrics={
+                f"insight_{idx}_rating": r.get("rating", 0)
+                for idx, r in enumerate(responses)
+            },
+        )
 
     async def get_meta_responses(self, query: str, context: List[str]) -> List[dict]:
         """
@@ -111,7 +142,7 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
 
         return [r.model_dump() for r in meta_responses if r]
 
-    async def a_query(self, query: str) -> str | BaseModel:
+    async def a_query(self, query: str, *args, **kwargs) -> SearchEngineResponse:
         """
         Execute a full global retrieval-augmented generation query.
 
@@ -133,8 +164,15 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
             language=self.language,
         )
         rendered = rendered_list[0]
-        return await self.llm.chat_completion(
+        answer = await self.llm.chat_completion(
             conversation=rendered.to_openai(),
-            output_schema=instruction.pydantic_model or str, # type: ignore
-        ) # type: ignore
+            output_schema=instruction.pydantic_model or str,  # type: ignore[arg-type]
+        )  # type: ignore[assignment]
+
+        return SearchEngineResponse(
+            query=query,
+            response=answer,
+            retrieval=context,
+            payload={}
+        )
 

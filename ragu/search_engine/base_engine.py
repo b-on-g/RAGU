@@ -1,19 +1,51 @@
 from abc import ABC, abstractmethod
-from typing import Any, Literal
+from dataclasses import dataclass, field
+from typing import Any, Literal, TypeVar, Generic
 
 from pydantic import BaseModel
-
 from ragu.common.base import RaguGenerativeModule
-from ragu.common.prompts.default_models import GlobalSearchContextModel
 from ragu.models.llm import LLM
-from ragu.search_engine.types import (
-    GlobalSearchResult,
-    LocalSearchResult,
-    MixSearchResult,
-    NaiveSearchResult,
-)
 from ragu.utils.ragu_utils import always_get_an_event_loop
 from ragu.utils.token_truncation import TokenTruncation
+
+
+ResultT = TypeVar("ResultT")
+
+
+@dataclass(slots=True)
+class SearchEngineRetrieve(ABC, Generic[ResultT]):
+    """
+    Base response class for retrieval.
+    """
+    query: str
+    result: ResultT
+    metrics: dict[str, Any] = field(default_factory=dict)
+
+    @abstractmethod
+    def to_text(self) -> str:
+        """
+        How to format the retrieved result.
+        """
+        ...
+
+    def __str__(self) -> str:
+        return self.to_text()
+
+
+@dataclass(slots=True)
+class SearchEngineResponse:
+    """
+    Default response for search engine.
+    """
+    query: str
+    response: str | BaseModel
+    retrieval: SearchEngineRetrieve[Any]
+    payload: dict[str, Any] = field(default_factory=dict)
+
+    def __str__(self) -> str:
+        if isinstance(self.response, BaseModel):
+            return self.response.model_dump_json(indent=4)
+        return self.response
 
 
 class BaseEngine(RaguGenerativeModule, ABC):
@@ -52,7 +84,7 @@ class BaseEngine(RaguGenerativeModule, ABC):
         query,
         *args,
         **kwargs,
-    ) -> Any:
+    ) -> SearchEngineRetrieve:
         """
         Retrieve context relevant to a query.
 
@@ -62,25 +94,25 @@ class BaseEngine(RaguGenerativeModule, ABC):
         pass
 
     @abstractmethod
-    async def a_query(self, query: str) -> str | BaseModel:
+    async def a_query(self, query: str, *args, **kwargs) -> SearchEngineResponse:
         """
         Execute full query flow and return answer.
 
         :param query: Input query string.
-        :return: Generated answer as a string or Pydantic model when a response schema is set.
+        :return: Structured search result containing the final answer and retrieval details.
         """
         pass
 
-    async def query(self, query: str) -> str | BaseModel:
+    async def query(self, query: str, *args, **kwargs) -> SearchEngineResponse:
         """
         Synchronous wrapper for ``a_query``.
 
         :param query: Input query string.
-        :return: Generated answer as a string or Pydantic model when a response schema is set.
+        :return: Structured search result containing the final answer and retrieval details.
         """
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
-            self.a_query(query)
+            self.a_query(query, *args, **kwargs)
         )
 
     async def search(
@@ -88,7 +120,7 @@ class BaseEngine(RaguGenerativeModule, ABC):
         query,
         *args,
         **kwargs,
-    ) -> NaiveSearchResult | LocalSearchResult | GlobalSearchResult | GlobalSearchContextModel | MixSearchResult:
+    ) -> SearchEngineRetrieve:
         """
         Synchronous wrapper for ``a_search``.
 

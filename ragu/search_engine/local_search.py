@@ -1,17 +1,27 @@
 # Partially based on https://github.com/gusye1234/nano-graphrag/blob/main/nano_graphrag/
-from typing import Any, List, Literal
+from dataclasses import dataclass, field
 from typing_extensions import override
+from textwrap import dedent
+from typing import Any, List, Literal
 
-from pydantic import BaseModel
+from jinja2 import Template
 
+from ragu.chunker.types import Chunk
 from ragu.common.global_parameters import Settings
+from ragu.common.prompts.messages import ChatMessages, render
+from ragu.common.prompts.prompt_storage import RAGUInstruction
 from ragu.graph.graph_retrieve_backend import GraphRetriever
 from ragu.graph.knowledge_graph import KnowledgeGraph
+from ragu.graph.types import Entity, Relation
 from ragu.models.embedder import Embedder
 from ragu.models.llm import LLM
 from ragu.models.scorer import Scorer
 from ragu.models.sparse_embedder import SparseEmbedder
-from ragu.search_engine.base_engine import BaseEngine
+from ragu.search_engine.base_engine import (
+    BaseEngine,
+    SearchEngineRetrieve,
+    SearchEngineResponse
+)
 from ragu.search_engine.search_functional import (
     _find_most_related_edges_from_entities,
     _find_most_related_text_unit_from_entities,
@@ -19,10 +29,50 @@ from ragu.search_engine.search_functional import (
     _find_most_related_community_from_entities,
     _rerank_items,
 )
-from ragu.search_engine.types import LocalSearchResult
 
-from ragu.common.prompts.prompt_storage import RAGUInstruction
-from ragu.common.prompts.messages import ChatMessages, render
+
+@dataclass(slots=True)
+class LocalSearchResult:
+    entities: list[Entity] = field(default_factory=list)
+    relations: list[Relation] = field(default_factory=list)
+    summaries: list[Any] = field(default_factory=list)
+    chunks: list[Chunk] = field(default_factory=list)
+    documents_id: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class LocalSearchRetrieve(SearchEngineRetrieve[LocalSearchResult]):
+    result: LocalSearchResult
+
+    def to_text(self) -> str:
+        template = Template(dedent("""
+            **Entities**
+            Entity, entity type, entity description
+            {%- for e in result.entities %}
+            {{ e.entity_name }}, {{ e.entity_type }}, {{ e.description }}
+            {%- endfor %}
+
+            **Relations**
+            Subject, relation type, object, relation description, rank
+            {%- for r in result.relations %}
+            {{ r.subject_name }}, {{ r.relation_type }}, {{ r.object_name }} - {{ r.description }}, {{ r.rank }}
+            {%- endfor %}
+
+            {%- if result.summaries %}
+            **Summary**
+            {%- for s in result.summaries %}
+            {{ s.summary }}
+            {%- endfor %}
+            {% endif %}
+
+            {%- if result.chunks %}
+            **Chunks**
+            {%- for c in result.chunks %}
+            {{ c.content }}
+            {%- endfor %}
+            {% endif %}
+        """))
+        return template.render(result=self.result)
 
 
 class LocalSearchEngine(BaseEngine):
@@ -88,7 +138,7 @@ class LocalSearchEngine(BaseEngine):
         self.language = language if language else Settings.language
 
     @override
-    async def a_search(self, query: str, top_k: int = 20, *args, **kwargs) -> LocalSearchResult:
+    async def a_search(self, query: str, top_k: int = 20, *args, **kwargs) -> LocalSearchRetrieve:
         """
         Retrieve local graph context for the given query.
 
@@ -96,7 +146,12 @@ class LocalSearchEngine(BaseEngine):
         :param top_k: Number of top entities to retrieve from the entity vector DB.
         :return: LocalSearchResult containing entities, relations, summaries, chunks, and document ids.
         """
-        entities, _ = await self.retriever.query_entities(query, top_k=top_k)
+        entities, entity_hits = await self.retriever.query_entities(query, top_k=top_k)
+        entity_scores_by_id = {
+            entity.id: hit.distance
+            for entity, hit in zip(entities, entity_hits)
+            if entity and entity.id
+        }
 
         relations = await _find_most_related_edges_from_entities(entities, self.knowledge_graph)
         relations = [relation for relation in relations if relation is not None]
@@ -137,12 +192,26 @@ class LocalSearchEngine(BaseEngine):
 
         documents_id = await _find_documents_id(entities)
 
-        return LocalSearchResult(
-            entities=entities,
-            relations=relations,
-            summaries=summaries,
-            chunks=relevant_chunks,
-            documents_id=documents_id,
+        return LocalSearchRetrieve(
+            query=query,
+            result=LocalSearchResult(
+                entities=entities,
+                relations=relations,
+                summaries=summaries,
+                chunks=relevant_chunks,
+                documents_id=documents_id,
+            ),
+            metrics={
+                "entities": [
+                    {
+                        "id": entity.id,
+                        "name": entity.entity_name,
+                        "rank": idx,
+                        "relevance_score": entity_scores_by_id.get(entity.id),
+                    }
+                    for idx, entity in enumerate(entities)
+                ],
+            },
         )
 
     @override
@@ -150,9 +219,9 @@ class LocalSearchEngine(BaseEngine):
             self,
             query: str,
             top_k: int = 20,
-            use_summary: bool=False,
-            use_chunks: bool=False
-    ) -> str | BaseModel:
+            use_summary: bool = False,
+            use_chunks: bool = False
+    ) -> SearchEngineResponse:
         """
         Execute a local RAG query.
 
@@ -162,12 +231,12 @@ class LocalSearchEngine(BaseEngine):
         :param use_chunks: Whether to use chunks or not.
         :return: Generated answer as a string or Pydantic model when a response schema is set.
         """
-        context: LocalSearchResult = await self.a_search(query, top_k)
+        context: LocalSearchRetrieve = await self.a_search(query, top_k)
 
         if not use_summary:
-            context.summaries = []
+            context.result.summaries = []
         if not use_chunks:
-            context.chunks = []
+            context.result.chunks = []
 
         truncated_context: str = self.truncation(str(context))
         instruction: RAGUInstruction = self.get_prompt("local_search")
@@ -179,7 +248,14 @@ class LocalSearchEngine(BaseEngine):
             language=self.language,
         )
         rendered: ChatMessages = rendered_conversations[0]
-        return await self.llm.chat_completion(
+        response = await self.llm.chat_completion(
             conversation=rendered.to_openai(),
             output_schema=instruction.pydantic_model or str, # type: ignore
         ) # type: ignore
+
+        return SearchEngineResponse(
+            query=query,
+            response=response,
+            retrieval=context,
+            payload={}
+        )

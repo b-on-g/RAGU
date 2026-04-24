@@ -1,7 +1,8 @@
 import asyncio
 import uuid
 from pathlib import Path
-from typing import Any, List, Dict, override, Literal
+from typing import Any, List, Dict, Literal
+from typing_extensions import override
 
 from qdrant_client.conversions.common_types import CollectionInfo, QueryResponse
 from qdrant_client.http.models import FusionQuery, Fusion

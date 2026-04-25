@@ -43,8 +43,8 @@ To make processing more efficient, the input text corpus is divided into small f
 RAGU supports several chunking strategies:
 
 * **`SimpleChunker`** — fixed-length splitting by text size.
-* **`SemanticChunker`** — chunking that preserves semantic coherence between sentences.
-* **`SmartChunker`** — an advanced semantic chunking approach.
+* **`SemanticTextChunker`** — chunking that preserves semantic coherence between sentences.
+* **`SmartSemanticChunker`** — an advanced semantic chunking approach based on `smart_chunker`.
 
 ---
 
@@ -56,6 +56,8 @@ For each text fragment, structured information is extracted:
 * **Relations** — description of the semantic link between two entities (or a relation class), and its confidence score.
 
 > **RAGU uses entity and relation classes from [NEREL](https://github.com/nerel-ds/NEREL).**
+>
+> `Entity` and `Relation` are base graph model classes. They can be inherited for domain-specific nodes and edges as long as storage adapters can still operate on the `Node` / `Edge` base contracts.
 
 **Entity classes:**
 
@@ -94,11 +96,7 @@ For each text fragment, structured information is extracted:
 | 16. | FOUNDED_BY       | 33. | PLACE_OF_BIRTH     |     |                  |
 | 17. | HAS_CAUSE        | 34. | PLACE_OF_DEATH     |     |                  |
 
-In the standard extraction pipeline, 29 NEREL entity types are used, while relation types are inferred dynamically.
-This behavior is defined by the `artifacts_extractor_prompt` instruction.
-
-> **Planned updates:**
-> Integration of entity/relation extraction using either a lightweight fine-tuned LLM or a combination of specialized NER and RE models — both aligned with NEREL taxonomy.
+In the standard extraction pipeline, NEREL entity and relation types are injected into extraction prompts by default. You can pass custom `entity_types` and `relation_types` to the LLM extractors when you need a different ontology.
 
 ---
 
@@ -131,7 +129,7 @@ Responsible components:
 ### 4. Graph Construction and Community Detection
 
 After entity and relation extraction, all elements are merged into a unified graph.
-Logically, the graph is **directed** (subject → object), but for practical processing, it is stored as **undirected**.
+The persisted graph is a directed multigraph: relations preserve source entity, target entity, and relation identity. Community detection builds an undirected projection internally for clustering.
 
 To enable **abstractive question answering**, RAGU follows the **GraphRAG methodology**, where the graph is clustered into **communities** and summarized.
 Community detection is performed using the [Leiden algorithm](https://en.wikipedia.org/wiki/Leiden_algorithm).
@@ -232,36 +230,56 @@ RAGU implements several chunking strategies and supports user-defined ones.
 
 The chunker interface is defined in `BaseChunker` (`ragu/chunker/base_chunker.py`).
 
-RAGU has "naive" chunker and semantic ones.
+RAGU has a naive chunker and semantic chunkers:
 
-The semantic chunker is implemented as `SmartChunker`.
+* **`SimpleChunker`** — fixed-size text splitting.
+* **`SemanticTextChunker`** — sentence-aware semantic splitting.
+* **`SmartSemanticChunker`** — semantic splitting backed by `smart_chunker`.
+
+The advanced semantic chunker is implemented as `SmartSemanticChunker`.
 See details at: [smart_chunker GitHub](https://github.com/bond005/smart_chunker/tree/main).
 
 ---
 
 ### Graph Extraction Pipeline
 
-RAGU supports two extraction strategies:
+RAGU supports three extraction strategies:
 
-1. Classical LLM-based pipeline.
-2. a **lightweight fine-tuned model approach** with [RAGU-lm](https://huggingface.co/RaguTeam/RAGU-lm) (only for Russian language)
+1. Single-step LLM extraction with `ArtifactsExtractorLLM`.
+2. Two-stage LLM extraction with `TwoStageArtifactsExtractorLLM`.
+3. a **lightweight fine-tuned model approach** with [RAGU-lm](https://huggingface.co/RaguTeam/RAGU-lm) (only for Russian language)
 
-#### LLMArtifactExtractor
+#### ArtifactsExtractorLLM
 
-`LLMArtifactExtractor` implements the standard GraphRAG method for entity and relation extraction via LLMs.
+`ArtifactsExtractorLLM` implements the standard GraphRAG method for entity and relation extraction via LLMs.
 
 ```python
-from ragu.triplet import ArtifactsExtractorLLM
+from ragu.models.llm import LLMOpenAI
+from ragu.models.openai import CachedAsyncOpenAI
+from ragu.triplet import ArtifactsExtractorLLM, TwoStageArtifactsExtractorLLM
 
-...
+client = CachedAsyncOpenAI(
+    base_url="https://api.openai.com/v1",
+    api_key="dummy-api-token",
+)
+llm = LLMOpenAI(
+    client=client,
+    model_name="gpt-4o-mini",
+)
 
-pipeline = ArtifactsExtractorLLM(
-    client=client,      # LLM client from ragu.llm
-    do_validation=True  # Enables artifact validation
+single_step_extractor = ArtifactsExtractorLLM(
+    llm=llm,
+    do_validation=True,
+)
+
+two_stage_extractor = TwoStageArtifactsExtractorLLM(
+    llm=llm,
+    do_entity_validation=True,
+    do_relation_validation=True,
 )
 ```
 
-Extraction and validation are driven by the `artifact_extraction` and `artifact_validation` prompts.
+Single-step extraction and validation are driven by the `artifact_extraction` and `artifact_validation` prompts. Two-stage extraction uses `entity_extraction`, `entity_validation`, `relation_extraction`, and `relation_validation`.
 
 #### RAGU-lm
 
@@ -429,15 +447,26 @@ sudo vllm serve RaguTeam/ragu-lm --max_model_len 4096
 
 Initialize RaguLmArtifactExtractor and use it.
 ```python
+from ragu.chunker.types import Chunk
+from ragu.models.llm import LLMOpenAI
+from ragu.models.openai import CachedAsyncOpenAI
 from ragu.triplet.ragu_lm_artifact_extractor import RaguLmArtifactExtractor
 
-...
-
-pipeline = RaguLmArtifactExtractor(
-    ragu_lm_vllm_url="http://0.0.0.0:8000/v1/",     
+client = CachedAsyncOpenAI(
+    base_url="http://0.0.0.0:8000/v1/",
+    api_key="dummy-api-token",
+)
+llm = LLMOpenAI(
+    client=client,
+    model_name="RaguTeam/ragu-lm",
 )
 
-entities, relations = pipeline(["some_texts"])
+pipeline = RaguLmArtifactExtractor(
+    llm=llm,
+)
+
+chunks = [Chunk(content="Some source text.", chunk_order_idx=0, doc_id="doc-1")]
+entities, relations = await pipeline.extract(chunks)
 ```
 
 ---
@@ -448,34 +477,48 @@ For efficient retrieval, all graph elements are indexed and stored.
 The main abstraction for managing this data is the `KnowledgeGraph` class.
 
 ```python
-# Step 1 — configure the graph building pipeline
-pipeline = InMemoryGraphBuilder(
-    client,
-    chunker,
-    artifact_extractor,
-    embedder=embedder,
+from ragu import BuilderArguments, KnowledgeGraph, SimpleChunker
+from ragu.models.embedder import EmbedderOpenAI
+from ragu.models.llm import LLMOpenAI
+from ragu.models.openai import CachedAsyncOpenAI
+from ragu.triplet import TwoStageArtifactsExtractorLLM
+
+client = CachedAsyncOpenAI(
+    base_url="https://api.openai.com/v1",
+    api_key="dummy-api-token",
+)
+llm = LLMOpenAI(
+   client=client,
+   model_name="gpt-4o-mini"
+)
+embedder = EmbedderOpenAI(
+    client=client,
+    model_name="text-embedding-3-large",
+    dim=3072,
+)
+
+chunker = SimpleChunker(max_chunk_size=1000)
+artifact_extractor = TwoStageArtifactsExtractorLLM(llm=llm)
+builder_settings = BuilderArguments(
+    use_llm_summarization=True,
     use_clustering=True,
-    cluster_only_if_more_than=2
-)
-
-# Step 2 — configure storage
-index = Index(
-    embedder,
-    graph_storage_kwargs={"clustering_params": {"max_cluster_size": 6}}
-)
-```
-
-```python
-knowledge_graph = KnowledgeGraph(
-    extraction_pipeline=pipeline,
-    index=index,
+    cluster_only_if_more_than=2,
     make_community_summary=True,
+)
+
+knowledge_graph = KnowledgeGraph(
+    llm=llm,
+    embedder=embedder,
+    chunker=chunker,
+    artifact_extractor=artifact_extractor,
+    builder_settings=builder_settings,
     language="russian",
 )
+
+await knowledge_graph.build_from_docs(["Text document to index."])
 ```
 
-Each entity’s description is embedded into a vector representation and stored in a vector database (`nano-db` by default).
-Other artifacts are stored in JSON format.
+Each entity, relation, community summary, and source chunk is stored through the configured storage adapters. Dense vectors are produced by `embedder`; optional sparse vectors are produced by `sparse_embedder` and used for hybrid search.
 
 ---
 
@@ -496,16 +539,15 @@ This structured context is used to answer the user’s query.
 ```python
 from ragu.search_engine import LocalSearchEngine
 
-...
-
-search_engine = LocalSearchEngine(
-    client,                 # LLM
-    knowledge_graph,        # Knowledge graph
-    embedder                # Embedder for query vectorization
+local_search = LocalSearchEngine(
+    llm=llm,                         # LLM for the final answer
+    knowledge_graph=knowledge_graph, # Knowledge graph
+    embedder=embedder,               # Embedder for query vectorization
 )
 
-search_result = await search_engine.a_search("Who wrote the novel 'Quo Vadis'?")
-response = await search_engine.a_query("Who wrote the novel 'Quo Vadis'?")
+search_result = await local_search.a_search("Who wrote the novel 'Quo Vadis'?")
+result = await local_search.a_query("Who wrote the novel 'Quo Vadis'?")
+print(result.response)
 ```
 
 #### Global Search
@@ -520,15 +562,78 @@ Global search operates on community summaries:
 ```python
 from ragu.search_engine import GlobalSearchEngine
 
-...
-
-search_engine = GlobalSearchEngine(
-    client,
-    knowledge_graph
+global_search = GlobalSearchEngine(
+    llm=llm,
+    knowledge_graph=knowledge_graph,
 )
 
-search_result = await search_engine.a_search("Who wrote the novel 'Quo Vadis'?")
-response = await search_engine.a_query("Who wrote the novel 'Quo Vadis'?")
+search_result = await global_search.a_search("Who wrote the novel 'Quo Vadis'?")
+result = await global_search.a_query("Who wrote the novel 'Quo Vadis'?")
+print(result.response)
+```
+
+#### Naive Search
+
+Naive search is vector RAG over source chunks. It does not expand through graph neighborhoods; it retrieves relevant chunks from vector storage and uses them as context for the LLM.
+
+```python
+from ragu.search_engine import NaiveSearchEngine
+
+naive_search = NaiveSearchEngine(
+    llm=llm,
+    knowledge_graph=knowledge_graph,
+    embedder=embedder,
+)
+
+search_result = await naive_search.a_search("Who wrote the novel 'Quo Vadis'?")
+result = await naive_search.a_query("Who wrote the novel 'Quo Vadis'?")
+print(result.response)
+```
+
+#### Mix Search
+
+Mix search runs several search engines and asks the LLM to synthesize a final answer from their responses. It is useful when you want graph neighborhood context, chunk-level vector context, and community-summary context in one answer.
+
+```python
+from ragu.search_engine import MixSearchEngine
+
+mix_search = MixSearchEngine(
+    llm=llm,
+    engines=[local_search, naive_search, global_search],
+)
+
+result = await mix_search.a_query("Who wrote the novel 'Quo Vadis'?")
+print(result.response)
+```
+
+#### Query Planning
+
+`QueryPlanEngine` wraps any search engine and decomposes complex questions into dependent subqueries before producing the final answer.
+
+```python
+from ragu.search_engine import QueryPlanEngine
+
+planned_search = QueryPlanEngine(local_search)
+
+result = await planned_search.a_query(
+    "Who wrote the novel 'Quo Vadis' and what country was the author from?"
+)
+print(result.response)
+```
+
+Example of a decomposed query:
+
+```python
+subqueries = await planned_search.process_query(
+    "Who wrote the novel 'Quo Vadis' and what country was the author from?"
+)
+
+for subquery in subqueries:
+    print(subquery.id, subquery.query, subquery.depends_on)
+
+# Possible output:
+# q1 Who wrote the novel 'Quo Vadis'? []
+# q2 What country was the author from? ['q1']
 ```
 
 ---
@@ -536,7 +641,7 @@ response = await search_engine.a_query("Who wrote the novel 'Quo Vadis'?")
 ### Prompt Tuning
 
 Every LLM-powered component in RAGU allows you to change instructions.
-Prompts are defined by `PromptTemplate` class.
+Prompts are defined by the `RAGUInstruction` class.
 
 ```python
 @dataclass
@@ -553,32 +658,52 @@ class PromptTemplate:
     supporting both single-instance and batched (list/tuple) generation.
     """
 
-    template: str                       # Jinja2 template
-    schema: Type[BaseModel] = None      # Pydantic schema
-    description: str = ""               # Short instruction description
+    template: str                                           # Jinja2 template
+    pydantic_model: Type[BaseModel] | Type[str] = str       # Pydantic schema
+    description: str = ""                                   # Short instruction description
 ```
 
 Retrieve all available instructions:
 
 ```python
+from ragu import LocalSearchEngine
+
 search_engine = LocalSearchEngine(
-    client,
-    knowledge_graph,
-    embedder
+    llm=llm,
+    knowledge_graph=knowledge_graph,
+    embedder=embedder,
 )
 
-print(search_engine.get_prompts())
+all_prompts = search_engine.get_prompts()
+print(all_prompts)
+
+local_search_prompt = search_engine.get_prompt("local_search")
+print(local_search_prompt.messages.to_str())
 ```
 
 Update a specific instruction:
 
 ```python
+from textwrap import dedent
+
+from ragu.common.prompts.messages import ChatMessages, SystemMessage, UserMessage
+from ragu.common.prompts.prompt_storage import RAGUInstruction
+
 search_engine.update_prompt(
     "local_search",
-    PromptTemplate(
-        template="New instruction as a Jinja2 template",
-        schema=SomeSchemaIfNeeded,
-        description="Description of your prompt (optional)"
-    )
+    RAGUInstruction(
+        messages=ChatMessages.from_messages([
+            SystemMessage(content="You answer using only the supplied graph context."),
+            UserMessage(content=dedent(
+                """
+                Query: {{ query }}
+                Context: {{ context }}
+                Language: {{ language }}
+                """
+            )),
+        ]),
+        pydantic_model=str,
+        description="Custom local-search instruction",
+    ),
 )
 ```

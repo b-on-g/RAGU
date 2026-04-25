@@ -43,8 +43,8 @@
 Для разбиения предусмотрены разные стратегии:
 
 * **`SimpleChunker`** - фиксированное разбиение по длине текста.
-* **`SemanticChunker`** - разбиение с учётом семантической связи между предложениями.
-* **`SmartChunker`** - ещё одно семантическое разбиение текста.
+* **`SemanticTextChunker`** - разбиение с учётом семантической связи между предложениями.
+* **`SmartSemanticChunker`** - семантическое разбиение текста на базе `smart_chunker`.
 
 ---
 
@@ -56,6 +56,8 @@
 * **Отношения**: текстовое описание отношения между двумя сущностями (или просто класс отношения), сила этого отношения.
 
 > **RAGU использует классы сущностей и отношений из [NEREL](https://github.com/nerel-ds/NEREL).**
+>
+> `Entity` и `Relation` являются базовыми классами модели графа. Их можно наследовать для более сложных доменных типов сущностей и отношений, если хранилища продолжают работать с базовыми контрактами `Node` / `Edge`.
 
 Представленные классы сущностей:
 
@@ -95,10 +97,7 @@
 |17. | HAS_CAUSE | 34. | PLACE_OF_DEATH |  |
 
 
----
-> В планах — добавление извлечения сущностей и отношений через небольшую дообученную LLM / через набор узкоспециализированных моделей для NER и RE.
-> Оба подхода используют набор классов для сущностей и отношений из NEREL.
----
+По умолчанию LLM-пайплайны используют типы сущностей и отношений из NEREL в инструкциях. Если нужна другая онтология, в экстракторы можно передать свои `entity_types` и `relation_types`.
 
 ### 3. Обработка триплетов
 
@@ -129,7 +128,7 @@
 
 ### 4. Построение графа и выделение комьюнити
 После выделения сущностей и отношений и их обработки происходит объединение всей информации в граф.
-С логической точки зрения он является направленным (имеется субъект и объект), но из-за особенностей дальнейшей обработки хранится он как ненаправленный.
+Граф хранится как направленный мультиграф: отношение сохраняет исходную сущность, целевую сущность и собственный идентификатор. Для выделения комьюнити внутри пайплайна строится ненаправленная проекция графа.
 
 Для возможности ответа на абстрактивные вопросы, следуя методологии GraphRAG, применяется выделение комьюнити в графе и получение саммари по этим комьюнити.
 Для выделения комьюнити используется [алгоритм Лейдена](https://en.wikipedia.org/wiki/Leiden_algorithm).
@@ -228,7 +227,8 @@ RAGU реализует различные подходы к разбиению,
 
 За интерфейс чанкера отвечает класс BaseChunker (ragu/chunker/base_chunker)
 
-Семантический чанкер представлен реализацией SmartChunker.
+В RAGU доступны `SimpleChunker`, `SemanticTextChunker` и `SmartSemanticChunker`.
+Семантический чанкер на базе `smart_chunker` представлен реализацией `SmartSemanticChunker`.
 
 Детали можете найти здесь: 
 https://github.com/bond005/smart_chunker/tree/main
@@ -236,25 +236,40 @@ https://github.com/bond005/smart_chunker/tree/main
 ---
 
 ### Пайплайн извлечения графа
-В RAGU реализуется два варианта извлечения графа знаний из сырых текстов: классический, на базе LLM, и подход на основании небольших специализированных моделей на базе [RAGU-lm](https://huggingface.co/RaguTeam/RAGU-lm).
-#### LLMArtifactExtractor
+В RAGU реализуется три варианта извлечения графа знаний из сырых текстов: одношаговый LLM-пайплайн `ArtifactsExtractorLLM`, двухшаговый LLM-пайплайн `TwoStageArtifactsExtractorLLM` и подход на основании небольшой специализированной модели [RAGU-lm](https://huggingface.co/RaguTeam/RAGU-lm).
+#### ArtifactsExtractorLLM
 
-LLMArtifactExtractor - реализация классического варианта извлечения сущностей и отношений из GraphRAG, использующий LLM.
+`ArtifactsExtractorLLM` - реализация классического варианта извлечения сущностей и отношений из GraphRAG, использующая LLM.
 
 
 Пример использования:
 ```python
-from ragu.triplet import ArtifactsExtractorLLM
+from ragu.models.llm import LLMOpenAI
+from ragu.models.openai import CachedAsyncOpenAI
+from ragu.triplet import ArtifactsExtractorLLM, TwoStageArtifactsExtractorLLM
 
-...
+client = CachedAsyncOpenAI(
+    base_url="https://api.openai.com/v1",
+    api_key="dummy-api-token",
+)
+llm = LLMOpenAI(
+    client=client,
+    model_name="gpt-4o-mini",
+)
 
-pipeline = ArtifactsExtractorLLM(
-    client=client,      # LLM клиент из ragu.llm
-    do_validation=True  # Можем поставить валидацию выделенных артефактов
+single_step_extractor = ArtifactsExtractorLLM(
+    llm=llm,
+    do_validation=True,
+)
+
+two_stage_extractor = TwoStageArtifactsExtractorLLM(
+    llm=llm,
+    do_entity_validation=True,
+    do_relation_validation=True,
 )
 ```
 
-За выделение/валидацию элементов графа отвечают инструкции `artifact_extraction` и `artifact_validation`.
+За одношаговое выделение/валидацию элементов графа отвечают инструкции `artifact_extraction` и `artifact_validation`. Двухшаговый пайплайн использует `entity_extraction`, `entity_validation`, `relation_extraction` и `relation_validation`.
 
 #### RAGU-lm
 
@@ -421,15 +436,26 @@ sudo vllm serve RaguTeam/ragu-lm --max_model_len 4096
 
 Инициализируем класс RaguLmArtifactExtractor и дальше можем обращаться к модели в коде.
 ```python
+from ragu.chunker.types import Chunk
+from ragu.models.llm import LLMOpenAI
+from ragu.models.openai import CachedAsyncOpenAI
 from ragu.triplet.ragu_lm_artifact_extractor import RaguLmArtifactExtractor
 
-...
-
-pipeline = RaguLmArtifactExtractor(
-    ragu_lm_vllm_url="http://0.0.0.0:8000/v1/",     
+client = CachedAsyncOpenAI(
+    base_url="http://0.0.0.0:8000/v1/",
+    api_key="dummy-api-token",
+)
+llm = LLMOpenAI(
+    client=client,
+    model_name="RaguTeam/ragu-lm",
 )
 
-entities, relations = pipeline(["some_texts"])
+pipeline = RaguLmArtifactExtractor(
+    llm=llm,
+)
+
+chunks = [Chunk(content="Текст источника.", chunk_order_idx=0, doc_id="doc-1")]
+entities, relations = await pipeline.extract(chunks)
 ```
 
 ---
@@ -441,34 +467,45 @@ entities, relations = pipeline(["some_texts"])
 За хранение и доступ к элементам графа знаний отвечает класс KnowledgeGraph.
 
 ```python
-# Первое - настроенный пайплайн для построения графа
-pipeline = InMemoryGraphBuilder(
-    client,
-    chunker,
-    artifact_extractor,
-    embedder=embedder,
+from ragu import BuilderArguments, KnowledgeGraph, SimpleChunker
+from ragu.models.embedder import EmbedderOpenAI
+from ragu.models.llm import LLMOpenAI
+from ragu.models.openai import CachedAsyncOpenAI
+from ragu.triplet import TwoStageArtifactsExtractorLLM
+
+client = CachedAsyncOpenAI(
+    base_url="https://api.openai.com/v1",
+    api_key="dummy-api-token",
+)
+llm = LLMOpenAI(client=client, model_name="gpt-4o-mini")
+embedder = EmbedderOpenAI(
+    client=client,
+    model_name="text-embedding-3-large",
+    dim=3072,
+)
+
+chunker = SimpleChunker(max_chunk_size=1000)
+artifact_extractor = TwoStageArtifactsExtractorLLM(llm=llm)
+builder_settings = BuilderArguments(
+    use_llm_summarization=True,
     use_clustering=True,
-    cluster_only_if_more_than=2
+    cluster_only_if_more_than=2,
+    make_community_summary=True,
 )
 
-# Второе - настроенное хранилище графа знаний
-index = Index(
-    embedder,
-    graph_storage_kwargs={"clustering_params": {"max_cluster_size": 6}}
-)
-```
-
-```python
 knowledge_graph = KnowledgeGraph(
-    extraction_pipeline=pipeline,   
-    index=index,
-    make_community_summary=True,    
+    llm=llm,
+    embedder=embedder,
+    chunker=chunker,
+    artifact_extractor=artifact_extractor,
+    builder_settings=builder_settings,
     language="russian",
 )
+
+await knowledge_graph.build_from_docs(["Текстовый документ для индексации."])
 ```
 
-Для каждой сущности создаётся эмбеддинг (векторное представление) её описания, который затем сохраняется в векторной базе данных. На данный момент используется `nano-db`.
-Остальные данные хранятся в виде json.
+Сущности, отношения, саммари комьюнити и исходные чанки сохраняются через настроенные адаптеры хранилищ. Плотные векторы строятся через `embedder`; при наличии `sparse_embedder` RAGU также сохраняет разреженные векторы для гибридного поиска.
 
 ---
 
@@ -489,19 +526,18 @@ knowledge_graph = KnowledgeGraph(
 ```python
 from ragu.search_engine import LocalSearchEngine
 
-...
-
-search_engine = LocalSearchEngine(
-    client,                 # LLM 
-    knowledge_graph,        # Граф знаний
-    embedder                # Эмбеддер для векторизации запроса
+local_search = LocalSearchEngine(
+    llm=llm,                         # LLM для финального ответа
+    knowledge_graph=knowledge_graph, # Граф знаний
+    embedder=embedder,               # Эмбеддер для векторизации запроса
 ) 
 
 # Поиск релевантного контекста в графе
-search_result = await search_engine.a_search("Кто написал роман 'Камо Грядеши'?")
+search_result = await local_search.a_search("Кто написал роман 'Камо Грядеши'?")
 
 # Получение ответа по графу знаний 
-response = await search_engine.a_query("Кто написал роман 'Камо Грядеши'?") 
+response = await local_search.a_query("Кто написал роман 'Камо Грядеши'?")
+print(response.response)
 ```
 
 
@@ -517,18 +553,84 @@ response = await search_engine.a_query("Кто написал роман 'Кам
 ```python
 from ragu.search_engine import GlobalSearchEngine
 
-...
-
-search_engine = GlobalSearchEngine(
-    client, 
-    knowledge_graph
+global_search = GlobalSearchEngine(
+    llm=llm,
+    knowledge_graph=knowledge_graph,
 )
 
 # Поиск релевантного контекста в графе
-search_result = await search_engine.a_search("Кто написал роман 'Камо Грядеши'?")
+search_result = await global_search.a_search("Кто написал роман 'Камо Грядеши'?")
 
 # Получение ответа по графу знаний 
-response = await search_engine.a_query("Кто написал роман 'Камо Грядеши'?") 
+response = await global_search.a_query("Кто написал роман 'Камо Грядеши'?")
+print(response.response)
+```
+
+#### Naive Search
+
+Naive search - это векторный RAG по исходным чанкам. Он не расширяет контекст через соседей в графе, а ищет релевантные чанки в векторном хранилище и передает их в LLM.
+
+```python
+from ragu.search_engine import NaiveSearchEngine
+
+naive_search = NaiveSearchEngine(
+    llm=llm,
+    knowledge_graph=knowledge_graph,
+    embedder=embedder,
+)
+
+# Поиск релевантных чанков
+search_result = await naive_search.a_search("Кто написал роман 'Камо Грядеши'?")
+
+# Получение ответа по найденным чанкам
+response = await naive_search.a_query("Кто написал роман 'Камо Грядеши'?")
+print(response.response)
+```
+
+#### Mix Search
+
+Mix search запускает несколько поисковых движков и просит LLM собрать итоговый ответ из их результатов. Это полезно, когда нужен одновременно локальный графовый контекст, векторный контекст по чанкам и контекст по комьюнити.
+
+```python
+from ragu.search_engine import MixSearchEngine
+
+mix_search = MixSearchEngine(
+    llm=llm,
+    engines=[local_search, naive_search, global_search],
+)
+
+response = await mix_search.a_query("Кто написал роман 'Камо Грядеши'?")
+print(response.response)
+```
+
+#### Query Planning
+
+`QueryPlanEngine` оборачивает любой поисковый движок и разбивает сложный вопрос на зависимые подзапросы перед формированием итогового ответа.
+
+```python
+from ragu.search_engine import QueryPlanEngine
+
+planned_search = QueryPlanEngine(local_search)
+
+response = await planned_search.a_query(
+    "Кто написал роман 'Камо Грядеши' и из какой страны был автор?"
+)
+print(response.response)
+```
+
+Пример декомпозиции запроса:
+
+```python
+subqueries = await planned_search.process_query(
+    "Кто написал роман 'Камо Грядеши' и из какой страны был автор?"
+)
+
+for subquery in subqueries:
+    print(subquery.id, subquery.query, subquery.depends_on)
+
+# Возможный результат:
+# q1 Кто написал роман 'Камо Грядеши'? []
+# q2 Из какой страны был автор? ['q1']
 ```
 
 ---
@@ -537,44 +639,53 @@ response = await search_engine.a_query("Кто написал роман 'Кам
 
 У каждого класса, который использует LLM под капотом, можно поменять используемую инструкцию.
 
-Сейчас все инструкции представлены классом `PromptTemplate`.
+Сейчас все инструкции представлены классом `RAGUInstruction`.
 ```python
 @dataclass
-class PromptTemplate:
-    """
-    Represents a Jinja2-based prompt template for instruction generation.
-
-    Each template defines:
-      - a Jinja2 text pattern (`template`)
-      - an optional Pydantic schema for structured output validation (`schema`)
-      - a short description of its purpose (`description`)
-
-    The template can be rendered dynamically with keyword arguments,
-    supporting both single-instance and batched (list/tuple) generation.
-    """
-
-    template: str                       #  jinja2 шаблон инструкции.
-    schema: Type[BaseModel] = None      # pydantic модель для структурированного ответа.
-    description: str = ""               # краткое описание инструкции.
-
-...
+class RAGUInstruction:
+    messages: ChatMessages
+    pydantic_model: Type[BaseModel] | Type[str] = str
+    description: str | None = None
 ```
 
 Получение словаря вида `"название_инструкции" : "соответствующий_prompt_template"`:
 ```python
+from ragu import LocalSearchEngine
+
 search_engine = LocalSearchEngine(
-    client,
-    knowledge_graph,
-    embedder
+    llm=llm,
+    knowledge_graph=knowledge_graph,
+    embedder=embedder,
 )
 
 print(search_engine.get_prompts())
 
-# {'local_search': PromptTemplate(template='\n**Goal**\nAnswer the query by summarizing relevant information from the context and, if necessary, well-known facts.\n\n**Instructions**\n1. If you do not know the correct answer, explicitly state that.\n2. Do not include unsupported information.\n\nQuery: {{ query }}\nContext: {{ context }}\n\nProvide the answer in the following language: {{ language }}\nReturn the result as valid JSON matching the provided schema.\n', schema=<class 'ragu.common.prompts.default_models.DefaultResponseModel'>, description='Prompt for generating a local context-based search response.')}
+local_search_prompt = search_engine.get_prompt("local_search")
+print(local_search_prompt.messages.to_str())
 ```
 
 Обновление инструкции:
 ```python
-search_engine.update_prompt("local_search", PromptTemplate(template="Новая инструкция в виде jinja2 шаблона", schema=SomeSchemaOfNeeded, description="Описание вашей инструкции (можно оставить пустой)"))
-```
+from textwrap import dedent
 
+from ragu.common.prompts.messages import ChatMessages, SystemMessage, UserMessage
+from ragu.common.prompts.prompt_storage import RAGUInstruction
+
+search_engine.update_prompt(
+    "local_search",
+    RAGUInstruction(
+        messages=ChatMessages.from_messages([
+            SystemMessage(content="Отвечай только на основе переданного контекста графа."),
+            UserMessage(content=dedent(
+                """
+                Запрос: {{ query }}
+                Контекст: {{ context }}
+                Язык: {{ language }}
+                """
+            )),
+        ]),
+        pydantic_model=str,
+        description="Пользовательская инструкция для local search",
+    ),
+)
+```

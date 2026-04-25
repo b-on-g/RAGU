@@ -5,7 +5,6 @@ from typing import Any, List, Literal
 
 from jinja2 import Template
 
-from ragu.common.base import RaguGenerativeModule
 from ragu.common.global_parameters import Settings
 from ragu.graph.knowledge_graph import KnowledgeGraph
 from ragu.models.llm import LLM
@@ -50,7 +49,7 @@ class GlobalSearchRetrieve(SearchEngineRetrieve[GlobalSearchResult]):
         return template.render(result=self.result)
 
 
-class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
+class GlobalSearchEngine(BaseEngine):
     """
     Executes global retrieval-augmented search (RAG) across the entire knowledge graph.
 

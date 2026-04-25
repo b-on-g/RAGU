@@ -1,8 +1,6 @@
 from typing import List, Dict, Tuple
 from typing_extensions import override
 
-from pydantic import BaseModel
-
 from ragu.common.prompts.default_models import SubQuery, QueryPlan, RewriteQuery
 from ragu.search_engine.base_engine import BaseEngine, SearchEngineResponse, SearchEngineRetrieve
 from ragu.search_engine.search_functional import _topological_sort

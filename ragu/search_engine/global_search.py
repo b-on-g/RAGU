@@ -4,8 +4,10 @@ from textwrap import dedent
 from typing import Any, List, Literal
 
 from jinja2 import Template
-
 from ragu.common.global_parameters import Settings
+from ragu.common.prompts.default_models import GlobalSearchContextModel
+from ragu.common.prompts.messages import ChatMessages, render
+from ragu.common.prompts.prompt_storage import RAGUInstruction
 from ragu.graph.knowledge_graph import KnowledgeGraph
 from ragu.models.llm import LLM
 from ragu.search_engine.base_engine import (
@@ -13,10 +15,8 @@ from ragu.search_engine.base_engine import (
     SearchEngineRetrieve,
     SearchEngineResponse
 )
-from ragu.common.prompts.prompt_storage import RAGUInstruction
-from ragu.common.prompts.messages import ChatMessages, render
 
-
+# TODO: add the ability to use custom schemas instead of GlobalSearchContextModel
 @dataclass(slots=True)
 class GlobalSearchResult:
     """
@@ -25,7 +25,7 @@ class GlobalSearchResult:
     Each insight is expected to contain at least a ``response`` and ``rating``
     field as produced by the global-search context prompt.
     """
-    insights: list[Any] = field(default_factory=list)
+    insights: list[GlobalSearchContextModel] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -110,7 +110,7 @@ class GlobalSearchEngine(BaseEngine):
         communities = await self.knowledge_graph.index.community_summary_kv_storage.get_by_ids(communities_ids)
         communities = [c for c in communities if c is not None]
 
-        responses = await self.get_meta_responses(query, communities)
+        responses = [r.model_dump() for r in await self.get_meta_responses(query, communities)]
 
         responses = [r for r in responses if int(r.get("rating", 0)) > 0]
         responses = sorted(responses, key=lambda x: int(x.get("rating", 0)), reverse=True)
@@ -126,7 +126,7 @@ class GlobalSearchEngine(BaseEngine):
             },
         )
 
-    async def get_meta_responses(self, query: str, context: List[str]) -> List[dict]:
+    async def get_meta_responses(self, query: str, context: List[str]) -> List[GlobalSearchContextModel]:
         """
         Generate and evaluate meta-responses for each community summary.
 
@@ -148,7 +148,7 @@ class GlobalSearchEngine(BaseEngine):
             language=self.language,
         )
 
-        meta_responses = await asyncio.gather(*[
+        meta_responses: List[GlobalSearchContextModel] = await asyncio.gather(*[
             self.llm.chat_completion(
                 conversation=rendered.to_openai(),
                 output_schema=instruction.pydantic_model or str, # type: ignore
@@ -156,7 +156,7 @@ class GlobalSearchEngine(BaseEngine):
             for rendered in rendered_list
         ]) # type: ignore
 
-        return [r.model_dump() for r in meta_responses if r]
+        return meta_responses
 
     async def a_query(self, query: str, *args, **kwargs) -> SearchEngineResponse:
         """

@@ -113,7 +113,7 @@ class BaseEngine(RaguGenerativeModule, ABC):
         """
         pass
 
-    async def query(self, query: str, *args, **kwargs) -> SearchEngineResponse:
+    def query(self, query: str, *args, **kwargs) -> SearchEngineResponse:
         """
         Delegate to ``a_query`` through the shared event-loop helper.
 
@@ -125,7 +125,7 @@ class BaseEngine(RaguGenerativeModule, ABC):
             self.a_query(query, *args, **kwargs)
         )
 
-    async def search(
+    def search(
         self,
         query,
         *args,

@@ -20,7 +20,7 @@ from ragu.storage.base_storage import (
 )
 from ragu.storage.graph_storage_adapters.networkx_adapter import NetworkXStorage
 from ragu.storage.kv_storage_adapters.json_storage import JsonKVStorage
-from ragu.storage.types import Node, Edge, Point
+from ragu.storage.types import Point
 from ragu.storage.vdb_storage_adapters.nano_vdb import NanoVectorDBStorage
 from ragu.utils.token_truncation import TokenTruncation
 
@@ -100,8 +100,8 @@ class ConsistencyReport:
         return self.to_text()
 
 
-NodeT = TypeVar("NodeT", bound=Node)
-EdgeT = TypeVar("EdgeT", bound=Edge)
+NodeT = TypeVar("NodeT", bound=Entity)
+EdgeT = TypeVar("EdgeT", bound=Relation)
 
 class Index(Generic[NodeT, EdgeT]):
     """
@@ -727,8 +727,9 @@ class Index(Generic[NodeT, EdgeT]):
             # TODO: remove full scan here
             all_edges = await self.graph_backend.get_all_edges()
             edges = [edge for edge in all_edges if edge and edge.id in relation_id_set]
-            entities = cast(List[Entity], [entity for entity in nodes if entity])
-            relations = cast(List[Relation], [relation for relation in edges if relation])
+
+            entities: List[NodeT] = [entity for entity in nodes if entity is not None]
+            relations: List[EdgeT] = [relation for relation in edges if relation is not None]
 
             communities.append(Community(
                 id=community_id,

@@ -22,8 +22,6 @@ class Node:
     """
 
     id: str
-    source_chunk_id: List[str]
-    clusters: List[ClusterInfo]
 
     def to_dict(self) -> Dict[str, Any]:
         """

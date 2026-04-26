@@ -1,8 +1,18 @@
 from __future__ import annotations
 
 import re
-from collections import defaultdict
-from typing import Dict, Iterable, List, Optional, Set, Literal
+from collections import Counter, defaultdict
+from typing import (
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Set,
+    Literal,
+    Tuple
+)
+
+import pandas as pd
 
 from ragu.chunker.base_chunker import BaseChunker
 from ragu.chunker.types import Chunk
@@ -25,11 +35,8 @@ from ragu.storage.base_storage import EdgeSpec
 from ragu.utils.token_truncation import TokenTruncation
 
 
-def _duplicate_ids(items: List[Entity] | List[Relation]) -> List[str]:
-    counts: Dict[str, int] = defaultdict(int)
-    for item in items:
-        assert item.id
-        counts[item.id] += 1
+def _duplicate_ids(items: Iterable[Entity | Relation | CommunitySummary | Chunk | Community]) -> List[str]:
+    counts = Counter(item.id for item in items)
     return [item_id for item_id, count in counts.items() if count > 1]
 
 
@@ -64,6 +71,7 @@ def _unique_description_fragments(descriptions: Iterable[str]) -> List[str]:
     return unique_parts
 
 
+# TODO: add an ability to pass merge policy into KG
 def default_merge_entities_policy(entities: List[Entity]) -> Entity:
     """
     Default merge policy for entities (class Entity).
@@ -128,12 +136,13 @@ def default_merge_entities_policy(entities: List[Entity]) -> Entity:
         clusters=deduplicated_clusters,
     )
 
+# TODO: add an ability to pass merge policy into KG
 def default_merge_relations_policy(relations: List[Relation]) -> Relation:
     """
     Default merge policy for relations (class Relation).
     Default policy = concatenate descriptions, merge source_chunk_ids, docs ids and clusters.
 
-    :param entities: Relations to merge.
+    :param relations: Relations to merge.
     :return: New single relation.
     """
     if len(relations) == 0:
@@ -177,7 +186,7 @@ class KnowledgeGraph:
     """
     High-level facade for building, storing, and querying a knowledge graph.
 
-    :param client: LLM client used by extraction and summarization modules.
+    :param llm: LLM client used by extraction and summarization modules.
     :param embedder: Embedder used for vector storage and clustering/similarity steps.
     :param chunker: Optional chunker used to split input documents.
     :param artifact_extractor: Optional extractor used to generate entities/relations from chunks.
@@ -483,6 +492,55 @@ class KnowledgeGraph:
         """
         return await self.index.get_communities(community_ids)
 
+    async def upsert_communities(self, communities: List[Community]) -> "KnowledgeGraph":
+        """
+        Add or replace one or more communities.
+
+        :param communities: Communities to upsert.
+        :return: Self for method chaining.
+        """
+        duplicate_ids = _duplicate_ids(communities)
+        if duplicate_ids:
+            raise ValueError(f"Cannot upsert duplicated community IDs in one request: {duplicate_ids}")
+
+        await self.index.upsert_communities(communities)
+        return self
+
+    async def update_communities(self, communities: List[Community]) -> "KnowledgeGraph":
+        """
+        Replace one or more existing communities by ID.
+
+        :param communities: Communities to replace.
+        :return: Self for method chaining.
+        :raises ValueError: If duplicate IDs are provided or a community is missing.
+        """
+        duplicate_ids = _duplicate_ids(communities)
+        if duplicate_ids:
+            raise ValueError(f"Cannot update duplicated community IDs in one request: {duplicate_ids}")
+
+        community_ids = [community.id for community in communities]
+        existing_communities = await self.index.community_kv_storage.get_by_ids(community_ids)
+        missing_ids = [
+            community_id
+            for community_id, existing in zip(community_ids, existing_communities)
+            if existing is None
+        ]
+        if missing_ids:
+            raise ValueError(f"Cannot update non-existent communities: {missing_ids}")
+
+        await self.index.upsert_communities(communities)
+        return self
+
+    async def delete_communities(self, community_ids: List[str]) -> "KnowledgeGraph":
+        """
+        Delete communities and their summaries.
+
+        :param community_ids: IDs of the communities to delete.
+        :return: Self for method chaining.
+        """
+        await self.index.delete_communities(community_ids)
+        return self
+
     async def upsert_summaries(self, summaries: List[CommunitySummary]) -> "KnowledgeGraph":
         """
         Add or replace community summaries.
@@ -490,6 +548,35 @@ class KnowledgeGraph:
         :param summaries: Summaries to upsert.
         :return: Self for method chaining.
         """
+        duplicate_ids = _duplicate_ids(summaries)
+        if duplicate_ids:
+            raise ValueError(f"Cannot upsert duplicated summary IDs in one request: {duplicate_ids}")
+
+        await self.index.upsert_summaries(summaries)
+        return self
+
+    async def update_summaries(self, summaries: List[CommunitySummary]) -> "KnowledgeGraph":
+        """
+        Replace one or more existing community summaries by ID.
+
+        :param summaries: Summaries to replace.
+        :return: Self for method chaining.
+        :raises ValueError: If duplicate IDs are provided or a summary is missing.
+        """
+        duplicate_ids = _duplicate_ids(summaries)
+        if duplicate_ids:
+            raise ValueError(f"Cannot update duplicated summary IDs in one request: {duplicate_ids}")
+
+        summary_ids = [summary.id for summary in summaries]
+        existing_summaries = await self.index.community_summary_kv_storage.get_by_ids(summary_ids)
+        missing_ids = [
+            summary_id
+            for summary_id, existing in zip(summary_ids, existing_summaries)
+            if existing is None
+        ]
+        if missing_ids:
+            raise ValueError(f"Cannot update non-existent summaries: {missing_ids}")
+
         await self.index.upsert_summaries(summaries)
         return self
 
@@ -552,11 +639,11 @@ class KnowledgeGraph:
         return unique_chunks
 
     async def reindex_community(self) -> "KnowledgeGraph":
+        """
+        Run clusterization and community summarization in knowledge graph.
+        """
         if not self.pipeline.community_summarizer:
             raise ValueError()
-
-        await self.index.community_kv_storage.drop()
-        await self.index.community_summary_kv_storage.drop()
 
         entities = await self.index.graph_backend.get_all_nodes()
         relations = await self.index.graph_backend.get_all_edges()
@@ -564,6 +651,7 @@ class KnowledgeGraph:
         entities = list(
             map(
                 lambda node: Entity(
+                    id=node.id,
                     entity_name=node.entity_name,
                     description=node.description,
                     entity_type=node.entity_type,
@@ -575,29 +663,124 @@ class KnowledgeGraph:
         )
 
         communities = await self.pipeline.cluster_graph(entities=entities, relations=relations)
-        summaries = await self.pipeline.community_summarizer.summarize(communities=communities)
+        summaries = (
+            await self.pipeline.community_summarizer.summarize(communities=communities) # type: ignore
+            if communities
+            else []
+        )
 
-        await self.index.upsert_communities(communities)
+        await self.update_entities(entities)
+
+        await self.index.community_kv_storage.drop()
+        await self.index.community_summary_kv_storage.drop()
+
+        await self.upsert_communities(communities)
         await self.upsert_summaries(summaries)
 
         return self
 
-    async def reindex_descriptions(self) -> "KnowledgeGraph":
-        assert self.pipeline.entity_summarizer is not None
+    # TODO: add an ability to summarize any of Entity/Relation (or Node/Edge) child types.
+    async def reindex_descriptions(
+        self,
+        summarize_only_more_than: Optional[int] = None,
+    ) -> "KnowledgeGraph":
+        """
+        Summarize existing entity and relation descriptions that exceed a sentence threshold.
+
+        The method reuses the configured entity/relation summarizers by building
+        summarizer-compatible DataFrames for only the long-description items.
+        Items at or below the threshold are left unchanged.
+
+        :param summarize_only_more_than: Summarize descriptions with more than
+            this many sentences. Defaults to the graph builder setting.
+        :return: Self for method chaining.
+        """
+        entity_summarizer = self.pipeline.entity_summarizer
+        relation_summarizer = self.pipeline.relation_summarizer
+        if entity_summarizer is None or relation_summarizer is None:
+            raise ValueError("Description reindexing requires entity and relation summarizers.")
+
+        if not entity_summarizer.use_llm_summarization or not relation_summarizer.use_llm_summarization: # type: ignore
+            raise ValueError("Description reindexing requires LLM summarization to be enabled.")
+        threshold = (
+            summarize_only_more_than
+            if summarize_only_more_than is not None
+            else self.builder_settings.summarize_only_if_more_than
+        )
+
+        def _description_sentence_count(description: str) -> int:
+            text = (description or "").strip()
+            if not text:
+                return 0
+
+            # TODO: replace with sentenizer
+            parts = re.split(r"\n+|(?<=[.!?])\s+", text)
+            return sum(1 for part in parts if re.sub(r"\s+", " ", part).strip())
+
         all_entities = await self.index.graph_backend.get_all_nodes()
-        entities = await self.pipeline.entity_summarizer.run(entities=all_entities)
+        entities_to_summarize = [
+            entity for entity in all_entities
+            if _description_sentence_count(entity.description) > threshold
+        ]
 
         all_relations = await self.index.graph_backend.get_all_edges()
-        relations = await self.pipeline.relation_summarizer.run(relations=all_relations)
+        relations_to_summarize = [
+            relation for relation in all_relations
+            if _description_sentence_count(relation.description) > threshold
+        ]
 
-        await self.index.graph_backend.index_start_callback()
-        await self.index.graph_backend.delete_nodes([e.id for e in all_entities])
-        await self.index.graph_backend.delete_edges([(r.subject_id, r.object_id, r.id) for r in all_relations])
-        await self.index.graph_backend.upsert_nodes(entities)
-        await self.index.graph_backend.upsert_edges(relations)
-        await self.index.graph_backend.index_done_callback()
+        summarized_entities: List[Entity] = []
+        if entities_to_summarize:
+            entity_rows = [
+                {
+                    "id": entity.id,
+                    "entity_name": entity.entity_name,
+                    "entity_type": entity.entity_type,
+                    "description": [entity.description],
+                    "source_chunk_id": entity.source_chunk_id,
+                    "documents_id": entity.documents_id,
+                    "clusters": entity.clusters,
+                    "duplicate_count": entity_summarizer.summarize_only_if_more_than + 1, # type: ignore
+                }
+                for entity in entities_to_summarize
+            ]
+            summarized_entities = await entity_summarizer.summarize_entities(pd.DataFrame(entity_rows)) # type: ignore
+
+        summarized_relations: List[Relation] = []
+        if relations_to_summarize:
+            relation_rows = [
+                {
+                    "id": relation.id,
+                    "subject_id": relation.subject_id,
+                    "object_id": relation.object_id,
+                    "subject_name": relation.subject_name,
+                    "object_name": relation.object_name,
+                    "relation_type": relation.relation_type,
+                    "description": relation.description,
+                    "relation_strength": relation.relation_strength,
+                    "source_chunk_id": relation.source_chunk_id,
+                    "duplicate_count": relation_summarizer.summarize_only_if_more_than + 1, # type: ignore
+                }
+                for relation in relations_to_summarize
+            ]
+            summarized_relations = await relation_summarizer.summarize_relations(pd.DataFrame(relation_rows)) # type: ignore
+
+        if not summarized_entities and not summarized_relations:
+            return self
+
+        if summarized_entities:
+            await self.update_entities(summarized_entities)
+        if summarized_relations:
+            await self.update_relations(summarized_relations)
+
+        return self
 
     async def reindex_graph(self) -> "KnowledgeGraph":
+        """
+        Reindex item descriptions and clusters. Useful after upserting a new graph into an existing one.
+
+        Reindexing = summarizing item descriptions + detecting communities and generating their summaries.
+        """
         return await (await self.reindex_descriptions()).reindex_community()
 
     async def _reindex_cluster_ids(
@@ -689,8 +872,8 @@ class KnowledgeGraph:
 
                 seen_memberships.add(membership_key)
                 remapped_memberships.append({
-                    "level": level,
-                    "cluster_id": global_cluster_id,
+                    "level": int(level),
+                    "cluster_id": int(global_cluster_id),
                 })
             entity.clusters = remapped_memberships
 

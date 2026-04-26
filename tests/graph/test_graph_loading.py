@@ -40,11 +40,11 @@ class TestGraphLoading:
         return "tests/kg_for_test"
 
     @pytest.fixture
-    def setup_storage_folder(self, example_graph_path):
+    def setup_storage_folder(self, example_graph_path, monkeypatch):
         """
         Set up storage folder before test.
         """
-        Settings.storage_folder = example_graph_path
+        monkeypatch.setattr(Settings, "storage_folder", example_graph_path)
         return example_graph_path
 
     @pytest.fixture
@@ -152,7 +152,7 @@ class TestGraphLoading:
         graph_backend = kg.index.graph_backend
         assert graph_backend is not None
 
-        num_edges = len(await graph_backend.get_all_nodes())
+        num_edges = len(await graph_backend.get_all_edges())
         assert num_edges > 0, "Loaded graph should contain relations"
 
     @pytest.mark.asyncio
@@ -172,7 +172,7 @@ class TestGraphLoading:
             builder_settings=no_llm_builder_settings,
         )
 
-        entity_vdb = kg.index.entity_vector_db
+        entity_vdb = kg.index.nodes_vector_db
         assert entity_vdb is not None
 
         assert hasattr(entity_vdb, '_client')

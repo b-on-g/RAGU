@@ -1,12 +1,14 @@
 """
-Tests for entity and relation merge logic.
+Tests for high-level entity and relation merge policies.
 """
 
-import pytest
-from ragu.graph.types import Entity, Relation
-from ragu.graph.index import Index, StorageArguments
-from ragu.models.embedder import Embedder
 from unittest.mock import AsyncMock
+
+import pytest
+
+from ragu.graph.knowledge_graph import default_merge_entities_policy, default_merge_relations_policy
+from ragu.graph.types import Entity, Relation
+from ragu.models.embedder import Embedder
 
 
 @pytest.fixture
@@ -18,15 +20,7 @@ def mock_embedder():
     return embedder
 
 
-@pytest.fixture
-def index(tmp_path, mock_embedder):
-    """Create an Index instance."""
-    storage_args = StorageArguments()
-    index = Index(embedder=mock_embedder, arguments=storage_args)
-    return index
-
-
-def test_merge_entities_no_duplicates(index):
+def test_merge_entities_no_duplicates():
     """Test merging when there are no duplicates."""
     entity1 = Entity(
         id="ent-1",
@@ -37,29 +31,14 @@ def test_merge_entities_no_duplicates(index):
         documents_id=["doc-1"],
         clusters=[],
     )
-    entity2 = Entity(
-        id="ent-2",
-        entity_name="Bob",
-        entity_type="Person",
-        description="Description 2",
-        source_chunk_id=["chunk-2"],
-        documents_id=["doc-2"],
-        clusters=[],
-    )
 
-    groups = {
-        ("Alice", "Person"): [entity1],
-        ("Bob", "Person"): [entity2],
-    }
+    merged = default_merge_entities_policy([entity1])
 
-    merged = index._merge_entities(groups)
-
-    assert len(merged) == 2
-    assert merged[0].id == "ent-1"
-    assert merged[1].id == "ent-2"
+    assert merged.id == "ent-1"
+    assert merged.description == "Description 1"
 
 
-def test_merge_entities_with_duplicates(index):
+def test_merge_entities_with_duplicates():
     """Test merging entities with duplicates."""
     entity1 = Entity(
         id="ent-1",
@@ -71,7 +50,7 @@ def test_merge_entities_with_duplicates(index):
         clusters=[{"level": 0, "cluster_id": 1}],
     )
     entity2 = Entity(
-        id="ent-2",
+        id="ent-1",
         entity_name="Alice",
         entity_type="Person",
         description="Works at Acme Corp",
@@ -80,14 +59,7 @@ def test_merge_entities_with_duplicates(index):
         clusters=[],
     )
 
-    groups = {
-        ("Alice", "Person"): [entity1, entity2],
-    }
-
-    merged = index._merge_entities(groups)
-
-    assert len(merged) == 1
-    merged_entity = merged[0]
+    merged_entity = default_merge_entities_policy([entity1, entity2])
 
     # Should use primary ID (from entity with most chunks)
     assert merged_entity.id == "ent-1"
@@ -103,7 +75,7 @@ def test_merge_entities_with_duplicates(index):
     assert set(merged_entity.documents_id) == {"doc-1", "doc-2"}
 
 
-def test_merge_entities_sorts_by_richness(index):
+def test_merge_entities_sorts_by_richness():
     """Test that merge uses entity with most chunks as primary."""
     entity1 = Entity(
         id="ent-1",
@@ -115,7 +87,7 @@ def test_merge_entities_sorts_by_richness(index):
         clusters=[],
     )
     entity2 = Entity(
-        id="ent-2",
+        id="ent-1",
         entity_name="Alice",
         entity_type="Person",
         description="Description 2",
@@ -124,17 +96,13 @@ def test_merge_entities_sorts_by_richness(index):
         clusters=[],
     )
 
-    groups = {
-        ("Alice", "Person"): [entity1, entity2],
-    }
+    merged = default_merge_entities_policy([entity1, entity2])
 
-    merged = index._merge_entities(groups)
-
-    # Should use ent-2 as primary (has more chunks)
-    assert merged[0].id == "ent-2"
+    # Should keep the shared ID while using the richer payload as primary.
+    assert merged.id == "ent-1"
 
 
-def test_merge_relations_no_duplicates(index):
+def test_merge_relations_no_duplicates():
     """Test merging relations with no duplicates."""
     rel1 = Relation(
         id="rel-1",
@@ -147,29 +115,14 @@ def test_merge_relations_no_duplicates(index):
         relation_strength=1.0,
         source_chunk_id=["chunk-1"],
     )
-    rel2 = Relation(
-        id="rel-2",
-        subject_id="ent-2",
-        object_id="ent-3",
-        subject_name="Bob",
-        object_name="Charlie",
-        relation_type="KNOWS",
-        description="Bob knows Charlie",
-        relation_strength=1.0,
-        source_chunk_id=["chunk-2"],
-    )
 
-    groups = {
-        ("ent-1", "ent-2", "KNOWS"): [rel1],
-        ("ent-2", "ent-3", "KNOWS"): [rel2],
-    }
+    merged = default_merge_relations_policy([rel1])
 
-    merged = index._merge_relations(groups)
-
-    assert len(merged) == 2
+    assert merged.id == "rel-1"
+    assert merged.description == "Alice knows Bob"
 
 
-def test_merge_relations_with_duplicates(index):
+def test_merge_relations_with_duplicates():
     """Test merging duplicate relations."""
     rel1 = Relation(
         id="rel-1",
@@ -183,7 +136,7 @@ def test_merge_relations_with_duplicates(index):
         source_chunk_id=["chunk-1", "chunk-2"],
     )
     rel2 = Relation(
-        id="rel-2",
+        id="rel-1",
         subject_id="ent-1",
         object_id="ent-2",
         subject_name="Alice",
@@ -194,14 +147,7 @@ def test_merge_relations_with_duplicates(index):
         source_chunk_id=["chunk-3"],
     )
 
-    groups = {
-        ("ent-1", "ent-2", "WORKS_WITH"): [rel1, rel2],
-    }
-
-    merged = index._merge_relations(groups)
-
-    assert len(merged) == 1
-    merged_rel = merged[0]
+    merged_rel = default_merge_relations_policy([rel1, rel2])
 
     # Should use primary ID
     assert merged_rel.id == "rel-1"
@@ -217,7 +163,7 @@ def test_merge_relations_with_duplicates(index):
     assert set(merged_rel.source_chunk_id) == {"chunk-1", "chunk-2", "chunk-3"}
 
 
-def test_merge_entities_deduplicates_descriptions(index):
+def test_merge_entities_deduplicates_descriptions():
     """Test that duplicate descriptions are not repeated."""
     entity1 = Entity(
         id="ent-1",
@@ -229,27 +175,158 @@ def test_merge_entities_deduplicates_descriptions(index):
         clusters=[],
     )
     entity2 = Entity(
-        id="ent-2",
+        id="ent-1",
         entity_name="Alice",
         entity_type="Person",
-        description="Software engineer",  # Same description
+        description="Software engineer",
         source_chunk_id=["chunk-2"],
         documents_id=["doc-1"],
         clusters=[],
     )
 
-    groups = {
-        ("Alice", "Person"): [entity1, entity2],
-    }
+    merged = default_merge_entities_policy([entity1, entity2])
 
-    merged = index._merge_entities(groups)
-
-    # Should not duplicate description
-    assert merged[0].description == "Software engineer"
+    assert merged.description == "Software engineer"
 
 
-def test_merge_relations_deduplicates_descriptions(index):
+def test_merge_relations_deduplicates_descriptions():
     """Test that duplicate relation descriptions are not repeated."""
+    rel1 = Relation(
+        id="rel-1",
+        subject_id="ent-1",
+        object_id="ent-2",
+        subject_name="Alice",
+        object_name="Bob",
+        relation_type="KNOWS",
+        description="Friends",
+        relation_strength=1.0,
+        source_chunk_id=["chunk-1"],
+    )
+    rel2 = Relation(
+        id="rel-1",
+        subject_id="ent-1",
+        object_id="ent-2",
+        subject_name="Alice",
+        object_name="Bob",
+        relation_type="KNOWS",
+        description="Friends",
+        relation_strength=1.0,
+        source_chunk_id=["chunk-2"],
+    )
+
+    merged = default_merge_relations_policy([rel1, rel2])
+
+    assert merged.description == "Friends"
+
+
+def test_merge_is_deterministic():
+    """Test that merge produces consistent results."""
+    entity1 = Entity(
+        id="ent-1",
+        entity_name="Alice",
+        entity_type="Person",
+        description="Desc A",
+        source_chunk_id=["chunk-1", "chunk-2"],
+        documents_id=["doc-1"],
+        clusters=[],
+    )
+    entity2 = Entity(
+        id="ent-1",
+        entity_name="Alice",
+        entity_type="Person",
+        description="Desc B",
+        source_chunk_id=["chunk-3"],
+        documents_id=["doc-2"],
+        clusters=[],
+    )
+
+    merged1 = default_merge_entities_policy([entity1, entity2])
+    merged2 = default_merge_entities_policy([entity1, entity2])
+
+    assert merged1.id == merged2.id
+    assert merged1.description == merged2.description
+    assert merged1.source_chunk_id == merged2.source_chunk_id
+
+
+def test_merge_entities_deduplicates_description_fragments():
+    entity1 = Entity(
+        id="ent-1",
+        entity_name="Alice",
+        entity_type="Person",
+        description="Software engineer. Works at Acme.",
+        source_chunk_id=["chunk-1"],
+        documents_id=["doc-1"],
+        clusters=[],
+    )
+    entity2 = Entity(
+        id="ent-1",
+        entity_name="Alice",
+        entity_type="Person",
+        description="Software engineer.",
+        source_chunk_id=["chunk-2"],
+        documents_id=["doc-2"],
+        clusters=[],
+    )
+
+    merged = default_merge_entities_policy([entity1, entity2])
+
+    assert merged.description.count("Software engineer.") == 1
+
+
+def test_merge_relations_deduplicates_description_fragments():
+    rel1 = Relation(
+        id="rel-1",
+        subject_id="ent-1",
+        object_id="ent-2",
+        subject_name="Alice",
+        object_name="Bob",
+        relation_type="KNOWS",
+        description="Friends. Work together.",
+        relation_strength=1.0,
+        source_chunk_id=["chunk-1"],
+    )
+    rel2 = Relation(
+        id="rel-1",
+        subject_id="ent-1",
+        object_id="ent-2",
+        subject_name="Alice",
+        object_name="Bob",
+        relation_type="KNOWS",
+        description="Friends.",
+        relation_strength=1.0,
+        source_chunk_id=["chunk-2"],
+    )
+
+    merged = default_merge_relations_policy([rel1, rel2])
+
+    assert merged.description.count("Friends.") == 1
+
+
+def test_merge_entities_rejects_different_ids():
+    entity1 = Entity(
+        id="ent-1",
+        entity_name="Alice",
+        entity_type="Person",
+        description="Description 1",
+        source_chunk_id=["chunk-1"],
+        documents_id=["doc-1"],
+        clusters=[],
+    )
+    entity2 = Entity(
+        id="ent-2",
+        entity_name="Alice",
+        entity_type="Person",
+        description="Description 2",
+        source_chunk_id=["chunk-2"],
+        documents_id=["doc-2"],
+        clusters=[],
+    )
+
+    with pytest.raises(ValueError, match="different IDs"):
+        default_merge_entities_policy([entity1, entity2])
+
+
+def test_merge_relations_rejects_different_ids():
     rel1 = Relation(
         id="rel-1",
         subject_id="ent-1",
@@ -268,105 +345,10 @@ def test_merge_relations_deduplicates_descriptions(index):
         subject_name="Alice",
         object_name="Bob",
         relation_type="KNOWS",
-        description="Friends",  # Same description
+        description="Coworkers",
         relation_strength=1.0,
         source_chunk_id=["chunk-2"],
     )
 
-    groups = {
-        ("ent-1", "ent-2", "KNOWS"): [rel1, rel2],
-    }
-
-    merged = index._merge_relations(groups)
-
-    # Should not duplicate description
-    assert merged[0].description == "Friends"
-
-
-def test_merge_is_deterministic(index):
-    """Test that merge produces consistent results."""
-    entity1 = Entity(
-        id="ent-1",
-        entity_name="Alice",
-        entity_type="Person",
-        description="Desc A",
-        source_chunk_id=["chunk-1", "chunk-2"],
-        documents_id=["doc-1"],
-        clusters=[],
-    )
-    entity2 = Entity(
-        id="ent-2",
-        entity_name="Alice",
-        entity_type="Person",
-        description="Desc B",
-        source_chunk_id=["chunk-3"],
-        documents_id=["doc-2"],
-        clusters=[],
-    )
-
-    groups = {
-        ("Alice", "Person"): [entity1, entity2],
-    }
-
-    # Merge multiple times
-    merged1 = index._merge_entities(groups)
-    merged2 = index._merge_entities(groups)
-
-    # Results should be identical
-    assert merged1[0].id == merged2[0].id
-    assert merged1[0].description == merged2[0].description
-    assert merged1[0].source_chunk_id == merged2[0].source_chunk_id
-
-
-def test_merge_entities_deduplicates_description_fragments(index):
-    entity1 = Entity(
-        id="ent-1",
-        entity_name="Alice",
-        entity_type="Person",
-        description="Software engineer. Works at Acme.",
-        source_chunk_id=["chunk-1"],
-        documents_id=["doc-1"],
-        clusters=[],
-    )
-    entity2 = Entity(
-        id="ent-2",
-        entity_name="Alice",
-        entity_type="Person",
-        description="Software engineer.",
-        source_chunk_id=["chunk-2"],
-        documents_id=["doc-2"],
-        clusters=[],
-    )
-
-    merged = index._merge_entities({("Alice", "Person"): [entity1, entity2]})
-
-    assert merged[0].description.count("Software engineer.") == 1
-
-
-def test_merge_relations_deduplicates_description_fragments(index):
-    rel1 = Relation(
-        id="rel-1",
-        subject_id="ent-1",
-        object_id="ent-2",
-        subject_name="Alice",
-        object_name="Bob",
-        relation_type="KNOWS",
-        description="Friends. Work together.",
-        relation_strength=1.0,
-        source_chunk_id=["chunk-1"],
-    )
-    rel2 = Relation(
-        id="rel-2",
-        subject_id="ent-1",
-        object_id="ent-2",
-        subject_name="Alice",
-        object_name="Bob",
-        relation_type="KNOWS",
-        description="Friends.",
-        relation_strength=1.0,
-        source_chunk_id=["chunk-2"],
-    )
-
-    merged = index._merge_relations({"rel-key": [rel1, rel2]})
-
-    assert merged[0].description.count("Friends.") == 1
+    with pytest.raises(ValueError, match="different IDs"):
+        default_merge_relations_policy([rel1, rel2])

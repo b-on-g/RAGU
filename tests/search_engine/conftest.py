@@ -22,16 +22,14 @@ class DummyEmbedder(Embedder):
 
 
 @pytest.fixture
-def real_kg():
-    previous_storage = Settings.storage_folder
-    Settings.storage_folder = "tests/kg_for_test"
+def real_kg(monkeypatch):
+    monkeypatch.setattr(Settings, "storage_folder", "tests/kg_for_test")
     kg = KnowledgeGraph(
         llm=None,
         embedder=DummyEmbedder(dim=3072),
         builder_settings=BuilderArguments(use_llm_summarization=False),
     )
-    yield kg
-    Settings.storage_folder = previous_storage
+    return kg
 
 
 @pytest.fixture

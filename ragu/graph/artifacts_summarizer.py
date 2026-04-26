@@ -217,9 +217,9 @@ class EntitySummarizer(RaguGenerativeModule):
                 )
                 result_description.extend([r.content for r in result if r])
 
-            return ". ".join(result_description)
+            return " ".join(result_description)
 
-        return ". ".join(descriptions)
+        return " ".join(descriptions)
 
 
 class RelationSummarizer(RaguGenerativeModule):

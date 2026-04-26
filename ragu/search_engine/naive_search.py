@@ -1,20 +1,61 @@
-from typing import Any, Optional, List
+from dataclasses import dataclass, field
+from textwrap import dedent
+from typing import Any, Optional, List, Literal
 
-from pydantic import BaseModel
-
+from jinja2 import Template
 from ragu.chunker.types import Chunk
 from ragu.common.global_parameters import Settings
+from ragu.graph.graph_retrieve_backend import GraphRetriever
 from ragu.graph.knowledge_graph import KnowledgeGraph
 from ragu.models.embedder import Embedder
 from ragu.models.llm import LLM
 from ragu.models.scorer import Scorer
-from ragu.search_engine.base_engine import BaseEngine
-from ragu.search_engine.types import NaiveSearchResult
-from ragu.storage import Embedding
-from ragu.utils.token_truncation import TokenTruncation
-
+from ragu.models.sparse_embedder import SparseEmbedder
+from ragu.search_engine.base_engine import (
+    BaseEngine,
+    SearchEngineRetrieve,
+    SearchEngineResponse
+)
 from ragu.common.prompts.prompt_storage import RAGUInstruction
 from ragu.common.prompts.messages import ChatMessages, render
+
+
+@dataclass(slots=True)
+class NaiveSearchResult:
+    """
+    Retrieved chunk payload for naive vector search.
+
+    ``chunks`` and ``scores`` are aligned by index after optional reranking and
+    truncation by ``rerank_top_k``. ``documents_id`` contains unique document IDs
+    present in the final chunk list.
+    """
+    chunks: list[Chunk] = field(default_factory=list)
+    scores: list[float] = field(default_factory=list)
+    documents_id: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class NaiveSearchRetrieve(SearchEngineRetrieve[NaiveSearchResult]):
+    """
+    Retrieval container returned by :class:`NaiveSearchEngine`.
+
+    Metrics use ``metrics["chunks"]`` with one entry per final chunk containing
+    ``id``, zero-based ``rank``, and retrieval or reranker ``score``.
+    """
+    result: NaiveSearchResult
+
+    def to_text(self) -> str:
+        """
+        Render retrieved chunks and aligned scores for the answer prompt.
+        """
+        template = Template(dedent("""
+            **Retrieved Chunks**
+            {%- for chunk, score in zip(result.chunks, result.scores) %}
+            [{{ loop.index }}] (score: {{ "%.3f"|format(score) }})
+            {{ chunk.content }}
+            {%- endfor %}
+        """))
+        return template.render(result=self.result, zip=zip)
 
 
 class NaiveSearchEngine(BaseEngine):
@@ -30,9 +71,10 @@ class NaiveSearchEngine(BaseEngine):
         llm: LLM,
         knowledge_graph: KnowledgeGraph,
         embedder: Embedder,
+        sparse_embedder: SparseEmbedder | None = None,
         reranker: Optional[Scorer] = None,
         max_context_length: int = 30_000,
-        tokenizer_backend: str = "tiktoken",
+        tokenizer_backend: Literal["tiktoken", "local"] = "tiktoken",
         tokenizer_model: str = "gpt-4",
         language: str | None = None,
         *args: Any,
@@ -43,7 +85,8 @@ class NaiveSearchEngine(BaseEngine):
 
         :param llm: LLM used to generate the final answer.
         :param knowledge_graph: Knowledge graph containing chunk vector DB and chunk KV storage.
-        :param embedder: Embedding model (kept for interface parity; retrieval uses graph index DBs).
+        :param embedder: Dense embedder used for retrieval queries.
+        :param sparse_embedder: Optional sparse embedder used for hybrid retrieval queries.
         :param reranker: Optional reranker used to improve ranking of retrieved chunks.
         :param max_context_length: Max tokens allowed for context after truncation.
         :param tokenizer_backend: Tokenizer backend used for token truncation.
@@ -51,18 +94,24 @@ class NaiveSearchEngine(BaseEngine):
         :param language: Default output language
         """
         _PROMPTS_NAMES = ["naive_search"]
-        super().__init__(llm=llm, prompts=_PROMPTS_NAMES, *args, **kwargs)
-
-        self.truncation = TokenTruncation(
-            tokenizer_model,
-            tokenizer_backend,
-            max_context_length,
+        super().__init__(
+            llm=llm,
+            prompts=_PROMPTS_NAMES,
+            max_context_length=max_context_length,
+            tokenizer_backend=tokenizer_backend,
+            tokenizer_model=tokenizer_model,
+            *args,
+            **kwargs,
         )
 
         self.graph = knowledge_graph
-        self.embedder = embedder
+        self.retriever = GraphRetriever(
+            knowledge_graph=knowledge_graph,
+            embedder=embedder,
+            sparse_embedder=sparse_embedder,
+            reranker=reranker,
+        )
         self.reranker = reranker
-        self.llm = llm
         self.language = language if language else Settings.language
 
     async def a_search(
@@ -72,7 +121,7 @@ class NaiveSearchEngine(BaseEngine):
         rerank_top_k: Optional[int] = None,
         *args: Any,
         **kwargs: Any,
-    ) -> NaiveSearchResult:
+    ) -> NaiveSearchRetrieve:
         """
         Perform a naive vector search over chunks.
 
@@ -80,38 +129,19 @@ class NaiveSearchEngine(BaseEngine):
         :param top_k: Number of top chunks to retrieve initially.
         :param rerank_top_k: Number of chunks to keep after reranking.
                              If None, keeps all reranked chunks. Used only when reranker is set.
-        :return: NaiveSearchResult with retrieved chunks, scores, and document ids.
+        :return: ``NaiveSearchRetrieve`` with retrieved chunks, aligned scores,
+                 document IDs, and chunk rank metrics.
         """
-        vectorized_query = await self.embedder.embed_text(query)
-        results = await self.graph.index.chunk_vector_db.query(
-            Embedding(vector=vectorized_query),
-            top_k=top_k
-        )
+        chunks, scores = await self.retriever.query_chunks(query, top_k=top_k)
 
-        if not results:
-            return NaiveSearchResult(chunks=[], scores=[], documents_id=[])
+        if not scores:
+            return NaiveSearchRetrieve(
+                query=query,
+                result=NaiveSearchResult(),
+                metrics={}
+            )
 
-        chunk_ids = [r.id for r in results]
-        distances = [r.distance for r in results]
-
-        chunk_data_list = await self.graph.index.chunks_kv_storage.get_by_ids(chunk_ids)
-
-        chunks: List[Chunk] = []
-        valid_distances: List[float] = []
-        for chunk_id, chunk_data, distance in zip(chunk_ids, chunk_data_list, distances):
-            if chunk_data is not None:
-                chunk = Chunk(
-                    content=chunk_data.get("content", ""),
-                    chunk_order_idx=chunk_data.get("chunk_order_idx", 0),
-                    doc_id=chunk_data.get("doc_id", ""),
-                    num_tokens=chunk_data.get("num_tokens"),
-                )
-                # Override the auto-generated id with the stored one
-                setattr(chunk, "id", chunk_id)
-                chunks.append(chunk)
-                valid_distances.append(distance)
-
-        scores = valid_distances
+        scores = [r.distance for r in scores]
         if self.reranker is not None and chunks:
             chunk_contents = [c.content for c in chunks]
             rerank_results = await self.reranker.score(query, chunk_contents)
@@ -130,23 +160,36 @@ class NaiveSearchEngine(BaseEngine):
 
         documents_id = list({c.doc_id for c in chunks if c.doc_id})
 
-        return NaiveSearchResult(
-            chunks=chunks,
-            scores=scores,
-            documents_id=documents_id,
+        return NaiveSearchRetrieve(
+            query=query,
+            result=NaiveSearchResult(
+                chunks=chunks,
+                scores=scores,
+                documents_id=documents_id,
+            ),
+            metrics={
+                "chunks": [
+                    {
+                        "id": chunk.id,
+                        "rank": idx,
+                        "score": score,
+                    }
+                    for idx, (chunk, score) in enumerate(zip(chunks, scores))
+                ],
+            },
         )
 
-    async def a_query(self, query: str, top_k: int = 20, rerank_top_k: Optional[int] = None) -> str | BaseModel:
+    async def a_query(self, query: str, top_k: int = 20, rerank_top_k: Optional[int] = None) -> SearchEngineResponse:
         """
         Execute a retrieval-augmented query using naive vector search.
 
         :param query: User query in natural language.
         :param top_k: Number of chunks to search initially (default: 20).
         :param rerank_top_k: Number of chunks to use after reranking (default: None = use all).
-        :return: Generated answer as a string or Pydantic model when a response schema is set.
-        :rtype: str | BaseModel
+        :return: ``SearchEngineResponse`` containing the generated answer and
+                 the ``NaiveSearchRetrieve`` used as context.
         """
-        context: NaiveSearchResult = await self.a_search(query, top_k, rerank_top_k)
+        context: NaiveSearchRetrieve = await self.a_search(query, top_k, rerank_top_k)
         truncated_context: str = self.truncation(str(context))
 
         instruction: RAGUInstruction = self.get_prompt("naive_search")
@@ -159,7 +202,14 @@ class NaiveSearchEngine(BaseEngine):
         )
         rendered: ChatMessages = rendered_list[0]
 
-        return await self.llm.chat_completion(
+        answer = await self.llm.chat_completion(
             conversation=rendered.to_openai(),
-            output_schema=instruction.pydantic_model or str, # type: ignore
+            output_schema=instruction.pydantic_model
         ) # type: ignore
+
+        return SearchEngineResponse(
+            query=query,
+            response=answer,
+            retrieval=context,
+            payload={}
+        )

@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Type
+from typing import Type
 
 from pydantic import BaseModel
 
 from ragu.common.prompts.default_models import (
     ArtifactsModel,
     CommunityReportModel,
-    GlobalSearchResponseModel,
     GlobalSearchContextModel,
-    DefaultResponseModel,
     EntityDescriptionModel,
     RelationDescriptionModel,
     ClusterSummarizationModel,
@@ -47,8 +45,8 @@ from ragu.common.prompts.messages import (
 @dataclass(frozen=True, slots=True)
 class RAGUInstruction:
     messages: ChatMessages
-    pydantic_model: Optional[Type[BaseModel]] = None
-    description: Optional[str] = None
+    pydantic_model: Type[BaseModel] | Type[str] = str
+    description: str | None = None
 
 
 DEFAULT_PROMPT_TEMPLATES: dict[str, RAGUInstruction] = {
@@ -118,7 +116,7 @@ DEFAULT_PROMPT_TEMPLATES: dict[str, RAGUInstruction] = {
                 UserMessage(content=DEFAULT_GLOBAL_SEARCH_PROMPT),
             ]
         ),
-        pydantic_model=GlobalSearchResponseModel,
+        pydantic_model=str,
         description="Prompt for generating a synthesized global search response.",
     ),
 
@@ -128,7 +126,7 @@ DEFAULT_PROMPT_TEMPLATES: dict[str, RAGUInstruction] = {
                 UserMessage(content=DEFAULT_RESPONSE_ONLY_PROMPT),
             ]
         ),
-        pydantic_model=DefaultResponseModel,
+        pydantic_model=str,
         description="Prompt for generating a local context-based search response.",
     ),
 
@@ -138,7 +136,7 @@ DEFAULT_PROMPT_TEMPLATES: dict[str, RAGUInstruction] = {
                 UserMessage(content=DEFAULT_RESPONSE_ONLY_PROMPT),
             ]
         ),
-        pydantic_model=DefaultResponseModel,
+        pydantic_model=str,
         description="Prompt for generating a naive vector RAG search response.",
     ),
 
@@ -148,7 +146,7 @@ DEFAULT_PROMPT_TEMPLATES: dict[str, RAGUInstruction] = {
                 UserMessage(content=DEFAULT_MIX_SEARCH_PROMPT),
             ]
         ),
-        pydantic_model=DefaultResponseModel,
+        pydantic_model=str,
         description="Prompt for generating an ensemble response from multiple search contexts.",
     ),
 
@@ -158,7 +156,7 @@ DEFAULT_PROMPT_TEMPLATES: dict[str, RAGUInstruction] = {
                 UserMessage(content=DEFAULT_MIX_SEARCH_CONTEXT_PROMPT),
             ]
         ),
-        pydantic_model=None,
+        pydantic_model=str,
         description="Prompt for formatting ordered multi-engine contexts before final synthesis.",
     ),
 
@@ -179,7 +177,7 @@ DEFAULT_PROMPT_TEMPLATES: dict[str, RAGUInstruction] = {
                 UserMessage(content=DEFAULT_RAGU_LM_ENTITY_EXTRACTION_PROMPT),
             ]
         ),
-        pydantic_model=None,
+        pydantic_model=str,
         description="Instruction for RAGU-lm entity extraction stage.",
     ),
 
@@ -190,7 +188,7 @@ DEFAULT_PROMPT_TEMPLATES: dict[str, RAGUInstruction] = {
                 UserMessage(content=DEFAULT_RAGU_LM_ENTITY_NORMALIZATION_PROMPT),
             ]
         ),
-        pydantic_model=None,
+        pydantic_model=str,
         description="Instruction for RAGU-lm entity normalization stage.",
     ),
 
@@ -201,7 +199,7 @@ DEFAULT_PROMPT_TEMPLATES: dict[str, RAGUInstruction] = {
                 UserMessage(content=DEFAULT_RAGU_LM_ENTITY_DESCRIPTION_PROMPT),
             ]
         ),
-        pydantic_model=None,
+        pydantic_model=str,
         description="Instruction for RAGU-lm entity description stage.",
     ),
 
@@ -212,7 +210,7 @@ DEFAULT_PROMPT_TEMPLATES: dict[str, RAGUInstruction] = {
                 UserMessage(content=DEFAULT_RAGU_LM_RELATION_DESCRIPTION_PROMPT),
             ]
         ),
-        pydantic_model=None,
+        pydantic_model=str,
         description="Instruction for RAGU-lm relation description stage.",
     ),
 

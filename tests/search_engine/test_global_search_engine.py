@@ -2,9 +2,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from ragu.common.prompts.default_models import GlobalSearchContextModel
 
-from ragu.search_engine.global_search import GlobalSearchEngine
-from ragu.search_engine.types import GlobalSearchResult
+from ragu.search_engine.base_engine import SearchEngineResponse
+from ragu.search_engine.global_search import GlobalSearchEngine, GlobalSearchResult, GlobalSearchRetrieve
 
 
 @pytest.mark.asyncio
@@ -16,16 +17,20 @@ async def test_global_search_filters_and_sorts_by_rating(monkeypatch, real_kg):
         "get_meta_responses",
         AsyncMock(
             return_value=[
-                {"response": "low", "rating": "1"},
-                {"response": "drop", "rating": "0"},
-                {"response": "high", "rating": "5"},
+                GlobalSearchContextModel(**{"reasoning": "", "response": "low", "rating": "1"}),
+                GlobalSearchContextModel(**{"reasoning": "", "response": "drop", "rating": "0"}),
+                GlobalSearchContextModel(**{"reasoning": "", "response": "high", "rating": "5"}),
             ]
         ),
     )
 
     result = await engine.a_search("query")
-    assert isinstance(result, GlobalSearchResult)
-    assert [r["response"] for r in result.insights] == ["high", "low"]
+    assert isinstance(result, GlobalSearchRetrieve)
+    assert [r["response"] for r in result.result.insights] == ["high", "low"]
+    assert result.metrics == {
+        "insight_0_rating": 5.0,
+        "insight_1_rating": 1.0,
+    }
 
 
 @pytest.mark.asyncio
@@ -33,7 +38,12 @@ async def test_global_query_returns_llm_response(monkeypatch, real_kg):
     llm = SimpleNamespace(chat_completion=AsyncMock(return_value="global-answer"))
     engine = GlobalSearchEngine(llm=llm, knowledge_graph=real_kg)
     engine.truncation = lambda s: s
-    engine.a_search = AsyncMock(return_value=GlobalSearchResult(insights=[{"response": "x", "rating": "1"}]))
+    engine.a_search = AsyncMock(
+        return_value=GlobalSearchRetrieve(
+            query="question",
+            result=GlobalSearchResult(insights=[{"response": "x", "rating": "1"}]),
+        )
+    )
 
     from ragu.search_engine import global_search as global_module
     monkeypatch.setattr(
@@ -48,4 +58,5 @@ async def test_global_query_returns_llm_response(monkeypatch, real_kg):
     )
 
     result = await engine.a_query("question")
-    assert result == "global-answer"
+    assert isinstance(result, SearchEngineResponse)
+    assert result.response == "global-answer"

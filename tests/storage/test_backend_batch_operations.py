@@ -1,7 +1,7 @@
 """
 Tests for batch operations in storage backends.
 """
-
+import numpy as np
 import pytest
 from ragu.graph.types import Entity, Relation
 from ragu.storage.graph_storage_adapters.networkx_adapter import NetworkXStorage
@@ -265,21 +265,21 @@ async def test_kv_delete(tmp_path):
 @pytest.mark.asyncio
 async def test_vdb_delete(tmp_path):
     """Test vector DB delete operation."""
-    from ragu.storage.types import Embedding
+    from ragu.storage.types import Point
 
     dim = 128
     storage_file = tmp_path / "test_vdb.json"
     vdb = NanoVectorDBStorage(embedding_dim=dim, filename=str(storage_file), cosine_threshold=0.0)
 
     # Insert data
-    embeddings = [
-        Embedding(id="id1", vector=[0.1] * dim, metadata={"content": "test1"}),
-        Embedding(id="id2", vector=[0.2] * dim, metadata={"content": "test2"}),
+    points = [
+        Point(id="id1", dense_embedding=np.array([0.1] * dim), metadata={"content": "test1"}),
+        Point(id="id2", dense_embedding=np.array([0.2] * dim), metadata={"content": "test2"}),
     ]
-    await vdb.upsert(embeddings)
+    await vdb.upsert(points)
 
     # Get initial count
-    query_emb = Embedding(vector=[0.15] * dim)
+    query_emb = Point(dense_embedding=np.array([0.15] * dim))
     initial_results = await vdb.query(query_emb, top_k=10)
     assert len(initial_results) == 2
 

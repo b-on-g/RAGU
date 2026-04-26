@@ -5,8 +5,8 @@ import pytest
 
 from ragu.chunker.types import Chunk
 from ragu.graph.types import Entity, Relation, CommunitySummary
-from ragu.search_engine.local_search import LocalSearchEngine
-from ragu.search_engine.types import LocalSearchResult
+from ragu.search_engine.base_engine import SearchEngineResponse
+from ragu.search_engine.local_search import LocalSearchEngine, LocalSearchResult, LocalSearchRetrieve
 from ragu.storage.types import EmbeddingHit
 
 
@@ -17,27 +17,32 @@ def _make_embedder_mock():
 @pytest.mark.asyncio
 async def test_local_search_collects_entities_relations_chunks_and_summaries(real_kg, kg_fixture_ids):
     entity_ids = kg_fixture_ids["entity_ids"]
-    real_kg.index.entity_vector_db.query = AsyncMock(
-        return_value=[
-            EmbeddingHit(id=entity_ids[0], distance=0.9),
-            EmbeddingHit(id=entity_ids[1], distance=0.8),
-            EmbeddingHit(id="ent-missing", distance=0.7),
-        ]
-    )
+    existing_entities = await real_kg.index.get_nodes(entity_ids[:2])
     engine = LocalSearchEngine(
         llm=SimpleNamespace(chat_completion=AsyncMock()),
         knowledge_graph=real_kg,
         embedder=_make_embedder_mock(),
     )
+    entities = [e for e in existing_entities if e is not None]
+    engine.retriever.query_entities = AsyncMock(
+        return_value=(
+            entities,
+            [EmbeddingHit(id=entity.id, distance=score) for entity, score in zip(entities, [0.9, 0.8])],
+        )
+    )
 
     result = await engine.a_search("query", top_k=3)
 
-    assert isinstance(result, LocalSearchResult)
-    assert [e.id for e in result.entities] == entity_ids[:2]
-    assert isinstance(result.relations, list)
-    assert isinstance(result.chunks, list)
-    assert isinstance(result.summaries, list)
-    assert isinstance(result.documents_id, list)
+    assert isinstance(result, LocalSearchRetrieve)
+    assert [e.id for e in result.result.entities] == entity_ids[:2]
+    assert isinstance(result.result.relations, list)
+    assert isinstance(result.result.chunks, list)
+    assert isinstance(result.result.summaries, list)
+    assert isinstance(result.result.documents_id, list)
+    assert result.metrics["entities"] == [
+        {"id": entities[0].id, "name": entities[0].entity_name, "rank": 0, "relevance_score": 0.9},
+        {"id": entities[1].id, "name": entities[1].entity_name, "rank": 1, "relevance_score": 0.8},
+    ]
 
 
 @pytest.mark.asyncio
@@ -65,14 +70,6 @@ async def test_local_search_reranks_entities_relations_summaries_and_chunks(monk
     chunk_b = Chunk(content="chunk beta", chunk_order_idx=1, doc_id="doc-b")
     summaries = [CommunitySummary(summary="summary alpha", id="123"), CommunitySummary(summary="summary beta", id="345")]
 
-    real_kg.index.entity_vector_db.query = AsyncMock(
-        return_value=[
-            EmbeddingHit(id=entity_a.id, distance=0.9),
-            EmbeddingHit(id=entity_b.id, distance=0.8),
-        ]
-    )
-    real_kg.index.get_entities = AsyncMock(return_value=[entity_a, entity_b])
-
     reranker = SimpleNamespace(
         score=AsyncMock(
             side_effect=[
@@ -96,14 +93,27 @@ async def test_local_search_reranks_entities_relations_summaries_and_chunks(monk
         embedder=_make_embedder_mock(),
         reranker=reranker,
     )
+    engine.retriever.query_entities = AsyncMock(
+        return_value=(
+            [entity_a, entity_b],
+            [
+                EmbeddingHit(id=entity_a.id, distance=0.11),
+                EmbeddingHit(id=entity_b.id, distance=0.95),
+            ],
+        )
+    )
 
     result = await engine.a_search("query", top_k=2)
 
-    assert [entity.id for entity in result.entities] == [entity_b.id, entity_a.id]
-    assert [relation.id for relation in result.relations] == [relation_b.id, relation_a.id]
-    assert [c.summary for c in result.summaries] == ["summary beta", "summary alpha"]
-    assert [chunk.id for chunk in result.chunks] == [chunk_b.id, chunk_a.id]
-    assert result.documents_id == ["doc-b", "doc-a"]
+    assert [entity.id for entity in result.result.entities] == [entity_b.id, entity_a.id]
+    assert [relation.id for relation in result.result.relations] == [relation_b.id, relation_a.id]
+    assert [c.summary for c in result.result.summaries] == ["summary beta", "summary alpha"]
+    assert [chunk.id for chunk in result.result.chunks] == [chunk_b.id, chunk_a.id]
+    assert result.result.documents_id == ["doc-b", "doc-a"]
+    assert result.metrics["entities"] == [
+        {"id": entity_b.id, "name": "Beta", "rank": 0, "relevance_score": 0.95},
+        {"id": entity_a.id, "name": "Alpha", "rank": 1, "relevance_score": 0.11},
+    ]
 
 
 @pytest.mark.asyncio
@@ -111,7 +121,7 @@ async def test_local_query_returns_raw_result_when_no_response_attr(monkeypatch,
     llm = SimpleNamespace(chat_completion=AsyncMock(return_value="raw-result"))
     engine = LocalSearchEngine(llm=llm, knowledge_graph=real_kg, embedder=_make_embedder_mock())
     engine.truncation = lambda s: s
-    engine.a_search = AsyncMock(return_value=LocalSearchResult())
+    engine.a_search = AsyncMock(return_value=LocalSearchRetrieve(query="question", result=LocalSearchResult()))
 
     from ragu.search_engine import local_search as local_module
     monkeypatch.setattr(
@@ -126,4 +136,5 @@ async def test_local_query_returns_raw_result_when_no_response_attr(monkeypatch,
     )
 
     result = await engine.a_query("question")
-    assert result == "raw-result"
+    assert isinstance(result, SearchEngineResponse)
+    assert result.response == "raw-result"

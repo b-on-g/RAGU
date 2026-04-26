@@ -1,21 +1,55 @@
 import asyncio
-from typing import Any, List
+from dataclasses import field, dataclass
+from textwrap import dedent
+from typing import Any, List, Literal
 
-from pydantic import BaseModel
-
-from ragu.common.base import RaguGenerativeModule
+from jinja2 import Template
 from ragu.common.global_parameters import Settings
+from ragu.common.prompts.default_models import GlobalSearchContextModel
+from ragu.common.prompts.messages import ChatMessages, render
+from ragu.common.prompts.prompt_storage import RAGUInstruction
 from ragu.graph.knowledge_graph import KnowledgeGraph
 from ragu.models.llm import LLM
-from ragu.search_engine.base_engine import BaseEngine
-from ragu.search_engine.types import GlobalSearchResult
-from ragu.utils.token_truncation import TokenTruncation
+from ragu.search_engine.base_engine import (
+    BaseEngine,
+    SearchEngineRetrieve,
+    SearchEngineResponse
+)
 
-from ragu.common.prompts.prompt_storage import RAGUInstruction
-from ragu.common.prompts.messages import ChatMessages, render
+# TODO: add the ability to use custom schemas instead of GlobalSearchContextModel
+@dataclass(slots=True)
+class GlobalSearchResult:
+    """
+    Ranked community-level insights selected for a global query.
+
+    Each insight is expected to contain at least a ``response`` and ``rating``
+    field as produced by the global-search context prompt.
+    """
+    insights: list[GlobalSearchContextModel] = field(default_factory=list)
 
 
-class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
+@dataclass(slots=True)
+class GlobalSearchRetrieve(SearchEngineRetrieve[GlobalSearchResult]):
+    """
+    Retrieval container returned by :class:`GlobalSearchEngine`.
+
+    Metrics include per-insight ratings after filtering and sorting.
+    """
+    result: GlobalSearchResult
+
+    def to_text(self) -> str:
+        """
+        Render selected community insights for final answer synthesis.
+        """
+        template = Template(dedent("""
+            {%- for insight in result.insights %}
+            {{ loop.index }}. Insight: {{ insight.response }}, rating: {{ insight.rating }}
+            {%- endfor %}
+        """))
+        return template.render(result=self.result)
+
+
+class GlobalSearchEngine(BaseEngine):
     """
     Executes global retrieval-augmented search (RAG) across the entire knowledge graph.
 
@@ -29,7 +63,7 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
         llm: LLM,
         knowledge_graph: KnowledgeGraph,
         max_context_length: int = 30_000,
-        tokenizer_backend: str = "tiktoken",
+        tokenizer_backend: Literal["tiktoken", "local"] = "tiktoken",
         tokenizer_model: str = "gpt-4",
         language: str | None = None,
         *args: Any,
@@ -38,26 +72,28 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
         """
         Initialize a new `GlobalSearchEngine`.
 
-        :param client: Language model client for generation.
+        :param llm: Language model client for meta-evaluation and final answer generation.
         :param knowledge_graph: Knowledge graph providing access to community-level summaries.
         :param max_context_length: Maximum number of tokens allowed in the truncated context.
         :param tokenizer_backend: Tokenizer backend used for token counting (default: ``"tiktoken"``).
         :param tokenizer_model: Model name for tokenizer calibration (default: ``"gpt-4"``).
+        :param language: Default output language (fed into prompt templates).
         """
         _PROMPTS = ["global_search_context", "global_search"]
-        super().__init__(llm=llm, prompts=_PROMPTS, *args, **kwargs)
+        super().__init__(
+            llm=llm,
+            prompts=_PROMPTS,
+            max_context_length=max_context_length,
+            tokenizer_backend=tokenizer_backend,
+            tokenizer_model=tokenizer_model,
+            *args,
+            **kwargs,
+        )
 
-        self.llm = llm
         self.knowledge_graph = knowledge_graph
         self.language = language if language else Settings.language
 
-        self.truncation = TokenTruncation(
-            tokenizer_model,
-            tokenizer_backend,
-            max_context_length,
-        )
-
-    async def a_search(self, query: str, *args, **kwargs) -> GlobalSearchResult:
+    async def a_search(self, query: str, *args, **kwargs) -> GlobalSearchRetrieve:
         """
         Perform a global semantic search across all communities in the knowledge graph.
 
@@ -66,21 +102,31 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
         concatenation of the top relevant community insights.
 
         :param query: The input natural language query.
-        :return: Concatenated responses from the top-rated communities.
+        :return: ``GlobalSearchRetrieve`` containing positively rated insights
+                 sorted by descending rating.
         """
 
         communities_ids = await self.knowledge_graph.index.community_summary_kv_storage.all_keys()
         communities = await self.knowledge_graph.index.community_summary_kv_storage.get_by_ids(communities_ids)
         communities = [c for c in communities if c is not None]
 
-        responses = await self.get_meta_responses(query, communities)
+        responses = [r.model_dump() for r in await self.get_meta_responses(query, communities)]
 
         responses = [r for r in responses if int(r.get("rating", 0)) > 0]
         responses = sorted(responses, key=lambda x: int(x.get("rating", 0)), reverse=True)
 
-        return GlobalSearchResult(responses)
+        return GlobalSearchRetrieve(
+            query=query,
+            result=GlobalSearchResult(
+                insights=responses,
+            ),
+            metrics={
+                f"insight_{idx}_rating": r.get("rating", 0)
+                for idx, r in enumerate(responses)
+            },
+        )
 
-    async def get_meta_responses(self, query: str, context: List[str]) -> List[dict]:
+    async def get_meta_responses(self, query: str, context: List[str]) -> List[GlobalSearchContextModel]:
         """
         Generate and evaluate meta-responses for each community summary.
 
@@ -90,7 +136,8 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
 
         :param query: The user query used to assess community relevance.
         :param context: A list of community summary texts to evaluate.
-        :return: A list of structured responses with fields such as ``response`` and ``rating``.
+        :return: List of structured response dictionaries with fields such as
+                 ``response`` and ``rating``.
         """
         instruction: RAGUInstruction = self.get_prompt("global_search_context")
 
@@ -101,7 +148,7 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
             language=self.language,
         )
 
-        meta_responses = await asyncio.gather(*[
+        meta_responses: List[GlobalSearchContextModel] = await asyncio.gather(*[
             self.llm.chat_completion(
                 conversation=rendered.to_openai(),
                 output_schema=instruction.pydantic_model or str, # type: ignore
@@ -109,9 +156,9 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
             for rendered in rendered_list
         ]) # type: ignore
 
-        return [r.model_dump() for r in meta_responses if r]
+        return meta_responses
 
-    async def a_query(self, query: str) -> str | BaseModel:
+    async def a_query(self, query: str, *args, **kwargs) -> SearchEngineResponse:
         """
         Execute a full global retrieval-augmented generation query.
 
@@ -119,7 +166,8 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
         - Generates a final global answer.
 
         :param query: The natural language query from the user.
-        :return: Generated answer as a string or Pydantic model when a response schema is set.
+        :return: ``SearchEngineResponse`` containing the generated answer and
+                 the ``GlobalSearchRetrieve`` used as context.
         """
         context = await self.a_search(query)
         truncated_context: str = self.truncation(str(context))
@@ -133,8 +181,14 @@ class GlobalSearchEngine(BaseEngine, RaguGenerativeModule):
             language=self.language,
         )
         rendered = rendered_list[0]
-        return await self.llm.chat_completion(
+        answer = await self.llm.chat_completion(
             conversation=rendered.to_openai(),
-            output_schema=instruction.pydantic_model or str, # type: ignore
-        ) # type: ignore
+            output_schema=instruction.pydantic_model or str,  # type: ignore[arg-type]
+        )  # type: ignore[assignment]
 
+        return SearchEngineResponse(
+            query=query,
+            response=answer,
+            retrieval=context,
+            payload={}
+        )

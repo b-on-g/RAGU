@@ -1,8 +1,8 @@
-from ragu.storage.types import Edge, Embedding, EmbeddingHit, Node
+from ragu.storage.types import Node, Edge, Point, EmbeddingHit
 
 __all__ = [
     'Node',
     'Edge',
-    'Embedding',
+    'Point',
     'EmbeddingHit',
 ]

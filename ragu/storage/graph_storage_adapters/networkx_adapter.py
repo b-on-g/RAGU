@@ -186,20 +186,24 @@ class NetworkXStorage(BaseGraphStorage[NodeT, EdgeT]):
                 results.append(None)
                 continue
 
-            matches = self._graph.get_edge_data(u, v)
-            if key:
-                matches = [matches.get(key, {})]
-            else:
-                matches = list(matches.values())
+            matches = self._graph.get_edge_data(u, v, default={})
+            if key is not None:
+                edge_data = matches.get(key)
+                if edge_data is None:
+                    results.append(None)
+                    continue
 
-            for edge_data in matches:
+                payload = dict(edge_data) # type: ignore
+                payload.pop("id", None)
+                results.append(self._edge_cls(subject_id=u, object_id=v, id=key, **payload))
+                continue
+
+            for match_key, edge_data in matches.items():
                 if not edge_data:
                     continue
                 payload = dict(edge_data)
-                payload["subject_id"] = u
-                payload["object_id"] = v
-                edge = self._edge_cls(**payload)
-                results.append(edge)
+                payload.pop("id", None)
+                results.append(self._edge_cls(subject_id=u, object_id=v, id=match_key, **payload))
         return results
 
     @override

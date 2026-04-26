@@ -52,13 +52,10 @@ class TestSimpleChunker:
         chunks = chunker.split(sample_text_medium)
 
         if len(chunks) > 1:
-            # Check that there's some overlap between consecutive chunks
+            # Check that consecutive chunks carry the configured overlap forward.
             for i in range(len(chunks) - 1):
-                chunk1_end = chunks[i].content[-overlap:] if len(chunks[i].content) >= overlap else chunks[i].content
-                chunk2_start = chunks[i + 1].content[:overlap]
-                # At least some characters should be similar
-                assert len(chunk1_end) > 0
-                assert len(chunk2_start) > 0
+                expected_overlap = chunks[i].content[-overlap:].strip()
+                assert chunks[i + 1].content.startswith(expected_overlap)
 
     def test_empty_string(self):
         chunker = SimpleChunker(max_chunk_size=100, overlap=0)

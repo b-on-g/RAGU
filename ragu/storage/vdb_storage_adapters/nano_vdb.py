@@ -1,16 +1,17 @@
 # Based on https://github.com/gusye1234/nano-graphrag/blob/main/nano_graphrag/_storage/vdb_nanovectordb.py
 
 import os
-from typing import Any, List
+from typing import Any, List, Dict
 from typing_extensions import override
 
 import numpy as np
 from nano_vectordb import NanoVectorDB # pyright: ignore[reportMissingTypeStubs]
+from nano_vectordb.dbs import Data
 
 from ragu.common.global_parameters import Settings
 from ragu.common.logger import logger
 from ragu.storage.base_storage import BaseVectorStorage
-from ragu.storage.types import Embedding, EmbeddingHit
+from ragu.storage.types import Point, EmbeddingHit
 
 
 class NanoVectorDBStorage(BaseVectorStorage):
@@ -50,7 +51,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         )
 
     @override
-    async def upsert(self, data: List[Embedding]):  # should not return, see base class
+    async def upsert(self, data: List[Point], **kwargs) -> None:
         """
         Insert or update a batch of embeddings in the database.
 
@@ -61,44 +62,46 @@ class NanoVectorDBStorage(BaseVectorStorage):
             logger.warning("Attempted to insert empty data into vector DB.")
             return
 
-        valid_data: List[dict[str, Any]] = []
-        skipped = 0
+        if any([item.sparse_embedding is not None for item in data]):
+            logger.warning(f"NanoVDB does not support sparse embeddings. Ignoring.")
 
+        points: List[Data] = []
         for embedding in data:
-            assert embedding.vector is not None  # should not happen according to typing
-            # if embedding.vector is None:
-            #     skipped += 1
-            #     continue
-
-            item: dict[str, Any] = {
+            item: Data = {
                 "__id__": embedding.id,
-                "__vector__": np.array(embedding.vector),
+                "__vector__": np.array(embedding.dense_embedding),
                 **embedding.metadata,
             }
-            valid_data.append(item)
+            points.append(item)
 
-        if skipped:
-            logger.warning(f"Skipped {skipped} items with missing embeddings.")
-
-        if not valid_data:
+        if not points:
             return
 
-        self._client.upsert(datas=valid_data)  # type: ignore
+        self._client.upsert(datas=points)
 
     @override
-    async def query(self, vector: Embedding, top_k: int = 5) -> List[EmbeddingHit]:
+    async def query(
+            self,
+            point: Point,
+            **kwargs: Any
+    ) -> List[EmbeddingHit]:
         """
         Search for the most similar documents in the vector database.
 
         Performs a cosine similarity search against all stored vectors,
         returning the top ``k`` results exceeding the similarity threshold.
 
-        :param vector: Query embedding payload.
-        :param top_k: Number of nearest neighbors to return.
+        :param point: Query embedding payload.
+        :param kwargs:
+            top_k: Number of nearest neighbors to return.
         :return: List of matched records and their distances.
         """
+        if point.dense_embedding is None:
+            raise ValueError("Empty dense embedding payload.")
+
+        top_k: int = kwargs.pop("top_k", 20)
         results = self._client.query( # type: ignore
-            query=np.array(vector.vector),
+            query=np.array(point.dense_embedding),
             top_k=top_k,
             better_than_threshold=self.cosine_threshold
         )
@@ -111,12 +114,89 @@ class NanoVectorDBStorage(BaseVectorStorage):
             }
             hits.append(
                 EmbeddingHit(
-                    id=result["__id__"], # type: ignore
-                    distance=float(result["__metrics__"]), # type: ignore
+                    id=result["__id__"],
+                    distance=float(result["__metrics__"]),
                     metadata=metadata,
                 )
             )
         return hits
+
+    @override
+    async def delete(self, ids: List[str], **kwargs: Any) -> None:
+        """
+        Delete embeddings by their IDs from the vector database.
+
+        :param ids: List of IDs to remove from the vector storage.
+        :type ids: List[str]
+        """
+        if not ids:
+            return
+        self._client.delete(ids)
+
+    @override
+    async def get_all_ids(self) -> List[str]:
+        """
+        Return all record IDs currently stored in NanoVectorDB.
+        """
+        try:
+            _data = getattr(self._client, "_NanoVectorDB__storage", {})
+            return [item["__id__"] for item in _data.get("data", [])]
+        except AttributeError:
+            raise RuntimeError("Seem that NanoVDB are non initialized.")
+
+    @override
+    async def get_points_by_ids(self, ids: List[str]) -> List[Point | None]:
+        """
+        Retrieve stored points by ID, preserving input order.
+
+        :param ids: Record identifiers to fetch.
+        :return: Points aligned with ``ids``; missing IDs mapped to ``None``.
+        """
+        data = self._client.get(ids)
+        points: List[Point | None] = []
+        data_dict: Dict = {}
+
+        try:
+            _data = getattr(self._client, "_NanoVectorDB__storage", {})
+            _matrix: np.ndarray = _data.get("matrix", np.array([]))
+        except AttributeError:
+            raise RuntimeError("Seem that NanoVDB are non initialized.")
+
+        for i, item in enumerate(data):
+            data_dict[item["__id__"]] = {"__vector__": _matrix[i], **item}
+
+        for _id in ids:
+            if _id in data_dict:
+                point = Point(
+                    id=_id,
+                    dense_embedding=data_dict[_id]["__vector__"],
+                    metadata={k: v for k, v in data_dict[_id].items() if k not in {"__id__", "__vector__"}},
+                )
+                points.append(point)
+            else:
+                points.append(None)
+
+        return points
+
+    @override
+    async def get_payloads_by_ids(self, ids: List[str]) -> List[Dict | None]:
+        """
+        Retrieve stored payloads by ID, preserving input order.
+
+        :param ids: Record identifiers to fetch.
+        :return: Payloads aligned with ``ids``; missing IDs mapped to ``None``.
+        """
+        output: List[Dict | None] = []
+        data = self._client.get(ids)
+        data_dict = {item["__id__"]: item for item in data}
+
+        for _id in ids:
+            if _id in data_dict:
+                output.append(data_dict[_id])
+            else:
+                output.append(None)
+
+        return output
 
     async def index_start_callback(self):
         """
@@ -129,18 +209,6 @@ class NanoVectorDBStorage(BaseVectorStorage):
         Post-query hook for interface compatibility.
         """
         pass
-
-    @override
-    async def delete(self, ids: List[str]) -> None:
-        """
-        Delete embeddings by their IDs from the vector database.
-
-        :param ids: List of IDs to remove from the vector storage.
-        :type ids: List[str]
-        """
-        if not ids:
-            return
-        self._client.delete(ids)
 
     async def index_done_callback(self) -> None:
         """

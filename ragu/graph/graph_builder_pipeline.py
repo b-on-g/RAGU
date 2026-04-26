@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
 import networkx as nx
-from graspologic.partition import HierarchicalClusters, hierarchical_leiden
+from graspologic_native import hierarchical_leiden
 
 from ragu.chunker.base_chunker import BaseChunker
 from ragu.chunker.types import Chunk
@@ -240,19 +240,41 @@ class InMemoryGraphBuilder:
         if graph.number_of_nodes() == 0 or graph.number_of_edges() == 0:
             return []
 
-        community_mapping: HierarchicalClusters = hierarchical_leiden(
-            graph,
+        edges: List[tuple[str, str, float]] = [
+            (str(u), str(v), 1.0)
+            for u, v in graph.edges()
+        ]
+
+        raw_community_mapping = hierarchical_leiden(
+            edges,
+            starting_communities=None,
             max_cluster_size=self.build_parameters.max_cluster_size,
-            random_seed=self.build_parameters.random_seed,
+            seed=self.build_parameters.random_seed,
+            resolution=1.0,
+            randomness=0.001,
+            use_modularity=True,
+            iterations=1
         )
 
-        clusters = defaultdict(lambda: defaultdict(lambda: {"entity_ids": set(), "relation_ids": set()}))
+        def _extract_mapping_item(item: Any) -> tuple[str, int, int]:
+            if hasattr(item, "node") and hasattr(item, "cluster") and hasattr(item, "level"):
+                return str(item.node), int(item.cluster), int(item.level)
+
+            if isinstance(item, dict):
+                return str(item["node"]), int(item["cluster"]), int(item["level"])
+
+            if isinstance(item, (tuple, list)) and len(item) >= 3:
+                return str(item[0]), int(item[1]), int(item[2])
+
+            raise TypeError(f"Unsupported hierarchical_leiden output item: {item!r}")
+
+        clusters = defaultdict(
+            lambda: defaultdict(lambda: {"entity_ids": set(), "relation_ids": set()})
+        )
         node_membership = defaultdict(set)
 
-        for part in community_mapping:
-            level = part.level
-            cluster_id = part.cluster
-            node_id = str(part.node)
+        for part in raw_community_mapping:
+            node_id, cluster_id, level = _extract_mapping_item(part)
 
             node = entity_by_id.get(node_id)
             if node is None:

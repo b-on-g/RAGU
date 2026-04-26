@@ -23,11 +23,32 @@
 
 
 ## Overview
-RAGU provides a pipeline for building a **Knowledge Graph**, and performing retrieve over the indexed data. It contains different approaches to extract structured data from raw texts to enable efficient question-answering over structured knowledge.
+RAGU is a modular GraphRAG engine for building, storing, and querying knowledge graphs from text. It combines:
+
+- chunking of raw documents into stable `Chunk` objects;
+- LLM-based extraction of `Entity` and `Relation` graph artifacts;
+- graph construction, deduplication, optional description summarization, and Leiden community detection;
+- graph, key-value, and vector storage backends;
+- retrieval strategies for local graph neighborhoods, global community summaries, naive chunk-vector RAG, and mixed search.
 
 Partially based on [nano-graphrag](https://github.com/gusye1234/nano-graphrag/tree/main)
 
 Our huggingface community is [here](https://huggingface.co/RaguTeam/)
+
+### Module documentation
+
+- [Package facade](ragu/README.md)
+- [Chunking](ragu/chunker/README.md)
+- [Common settings, prompts, and utilities](ragu/common/README.md)
+- [Prompt schemas and templates](ragu/common/prompts/README.md)
+- [Graph construction and index](ragu/graph/README.md)
+- [Models, embedders, sparse embedders, and rerankers](ragu/models/README.md)
+- [Search engines](ragu/search_engine/README.md)
+- [Storage contracts and adapters](ragu/storage/README.md)
+- [Graph storage adapters](ragu/storage/graph_storage_adapters/README.md)
+- [Vector DB adapters](ragu/storage/vdb_storage_adapters/README.md)
+- [Triplet/entity-relation extraction](ragu/triplet/README.md)
+- [Utilities](ragu/utils/README.md)
 
 ---
 
@@ -56,6 +77,7 @@ pip install graph_ragu[local]
 ### Simple example of building knowledge graph
 
 ```python
+import asyncio
 import os
 import sys
 import shutil
@@ -69,7 +91,7 @@ from ragu import (
     KnowledgeGraph,
     BuilderArguments,
     Settings,
-    ArtifactsExtractorLLM,
+    TwoStageArtifactsExtractorLLM,
 )
 from ragu.models.embedder import EmbedderOpenAI
 from ragu.models.llm import LLMOpenAI
@@ -86,8 +108,15 @@ client = CachedAsyncOpenAI(
     debug_errors_storage='./llm_debug',
 )
 
-llm = LLMOpenAI(client, "mistralai/mistral-medium-3")
-embedder = EmbedderOpenAI(client, "emb-qwen/qwen3-embedding-8b", dim=4096)
+llm = LLMOpenAI(
+    client=client,
+    model_name="mistralai/mistral-medium-3",
+)
+embedder = EmbedderOpenAI(
+    client=client,
+    model_name="emb-qwen/qwen3-embedding-8b",
+    dim=4096,
+)
 
 # Configure working directory and language
 Settings.storage_folder = "ragu_working_dir"
@@ -102,15 +131,19 @@ docs = read_text_from_files("path/to/your/files")
 chunker = SimpleChunker(max_chunk_size=1000)
 
 # Set up artifact extractor
-artifact_extractor = ArtifactsExtractorLLM(
+artifact_extractor = TwoStageArtifactsExtractorLLM(
     llm=llm,
-    do_validation=False
+    do_entity_validation=True,
+    do_relation_validation=True,
 )
 
 # Configure builder settings
 builder_settings = BuilderArguments(
     use_llm_summarization=True,
-    vectorize_chunks=True,
+    use_clustering=False,
+    build_only_vector_context=False,
+    make_community_summary=True,
+    remove_isolated_nodes=True,
 )
 
 # Build knowledge graph
@@ -136,13 +169,17 @@ Search over entities retrieved for the query and their connected context (relati
 from ragu.search_engine.local_search import LocalSearchEngine
 
 local_search = LocalSearchEngine(
-    llm,  # or use another LLM for answering
-    knowledge_graph,
-    embedder,
+    llm=llm,  # or use another LLM for answering
+    knowledge_graph=knowledge_graph,
+    embedder=embedder,
     tokenizer_model="gpt-4o-mini",
 )
 # found = await local_search.a_search("What is the Betweenlands??")
-local_answer = await local_search.a_query("Who wrote Romeo and Juliet?")
+local_answer = await local_search.a_query(
+    "Who wrote Romeo and Juliet?",
+    use_summary=True,
+    use_chunks=True,
+)
 print(local_answer.response)
 ```
 
@@ -156,7 +193,7 @@ global_search = GlobalSearchEngine(
     knowledge_graph=knowledge_graph,
 )
 global_answer = await global_search.a_query("Your broad query here")
-print(global_answer)
+print(global_answer.response)
 ```
 
 **Naive search (vector RAG):**
@@ -169,7 +206,19 @@ naive_search = NaiveSearchEngine(
     embedder=embedder,
 )
 naive_answer = await naive_search.a_query("Your query here")
-print(naive_answer)
+print(naive_answer.response)
+```
+
+**Mixed search:**
+```python
+from ragu import MixSearchEngine
+
+mix_search = MixSearchEngine(
+    llm=llm,
+    engines=[local_search, naive_search, global_search],
+)
+mixed_answer = await mix_search.a_query("Your query here")
+print(mixed_answer.response)
 ```
 
 ### Query planning wrapper
@@ -197,7 +246,7 @@ print(result)
 
 #### Builder Settings
 
-Configure the knowledge graph building pipeline using `BuilderSettings`:
+Configure the knowledge graph building pipeline using `BuilderArguments`:
 
 ```python
 from ragu import BuilderArguments
@@ -210,17 +259,63 @@ builder_arguments = BuilderArguments(
     remove_isolated_nodes=True,  # Remove entities without relations
     vectorize_chunks=True,  # Vectorize chunk for naive (vector) search
     cluster_only_if_more_than=10000,  # Minimum entities before clustering kicks in
+    summarize_only_if_more_than=7,  # Summarize descriptions only when there are many duplicates
     max_cluster_size=128,  # Maximum entities per cluster
+    random_seed=42,
 )
 
 # Pass to KnowledgeGraph
-knowledge_graph = await KnowledgeGraph(
-    client=client,
+knowledge_graph = KnowledgeGraph(
+    llm=llm,
     embedder=embedder,
     chunker=chunker,
     artifact_extractor=artifact_extractor,
     builder_settings=builder_arguments,
-).build_from_docs(docs)
+)
+await knowledge_graph.build_from_docs(docs)
+```
+
+Common builder presets:
+
+```python
+# Naive vector RAG only: chunks + chunk vectors, no entity/relation graph.
+BuilderArguments(
+    build_only_vector_context=True,
+    make_community_summary=False,
+)
+
+# Fast graph extraction: no extra LLM summarization and no communities.
+BuilderArguments(
+    use_llm_summarization=False,
+    use_clustering=False,
+    make_community_summary=False,
+    remove_isolated_nodes=True,
+)
+
+# Full GraphRAG: extraction, summarization, communities, global search support.
+BuilderArguments(
+    use_llm_summarization=True,
+    use_clustering=False,
+    make_community_summary=True,
+    remove_isolated_nodes=True,
+)
+```
+
+#### Storage Settings
+
+RAGU stores graph structure, KV data, and vectors through pluggable adapters. See [storage docs](ragu/storage/README.md), [graph storage adapters](ragu/storage/graph_storage_adapters/README.md), and [vector DB adapters](ragu/storage/vdb_storage_adapters/README.md).
+
+```python
+from ragu import StorageArguments
+from ragu.storage.vdb_storage_adapters.qdrant_vdb import QdrantVectorDBStorage
+
+storage_settings = StorageArguments(
+    vdb_storage_type=QdrantVectorDBStorage,
+    vdb_storage_kwargs={
+        "location": ":memory:",
+        # Use sparse_type="bm25", "bm42", or "splade" for hybrid retrieval.
+    },
+)
 ```
 ---
 
@@ -231,6 +326,8 @@ Each text in corpus is processed to extract structured information. It consist o
 * **Relations** — textual description of the link between two entities (or a relation class), as well as its confidence/strength.
 
 > **RAGU uses entity and relation classes from [NEREL](https://github.com/nerel-ds/NEREL).**
+>
+> `Entity` and `Relation` are base graph model classes. They can be inherited to create richer domain-specific node and edge types, provided the storage `Node` / `Edge` contract is preserved. See [graph docs](ragu/graph/README.md) and [storage docs](ragu/storage/README.md).
 
 ### Entity types
 
@@ -276,7 +373,12 @@ Each text in corpus is processed to extract structured information. It consist o
 File: ragu/triplet/llm_artifact_extractor.py.
 A baseline pipeline that uses LLM to extract entities, relations, and their descriptions in a single step.
 
-#### 2. [RAGU-lm](https://huggingface.co/RaguTeam/RAGU-lm) (for russian language)
+#### 2. Two-stage LLM Pipeline
+
+File: ragu/triplet/two_stage_extractor.py.
+Extracts entities first, then extracts relations constrained by the entity list. It can separately validate entity and relation outputs.
+
+#### 3. [RAGU-lm](https://huggingface.co/RaguTeam/RAGU-lm) (for russian language)
 A compact model (Qwen-3-0.6B) fine-tuned on the NEREL dataset.
 The pipeline operates in several stages:
 1. Extract unnormalized entities from text.
@@ -303,9 +405,9 @@ All RAGU components that use LLMs inherit from `RaguGenerativeModule`, which pro
 from ragu import LocalSearchEngine
 
 search_engine = LocalSearchEngine(
-    client,
-    knowledge_graph,
-    embedder
+    llm=llm,
+    knowledge_graph=knowledge_graph,
+    embedder=embedder,
 )
 
 # Get all prompts used by the search engine
@@ -331,7 +433,6 @@ from textwrap import dedent
 
 from ragu.common.prompts.prompt_storage import RAGUInstruction
 from ragu.common.prompts.messages import ChatMessages, UserMessage, SystemMessage
-from ragu.common.prompts.default_models import DefaultResponseModel
 
 # Create custom prompt instruction
 custom_instruction = RAGUInstruction(
@@ -348,7 +449,7 @@ custom_instruction = RAGUInstruction(
             """
         ))  # Can store any conversation
     ]),
-    pydantic_model=DefaultResponseModel,  # Your pydantic model (optional)
+    pydantic_model=str,  # Or your own pydantic BaseModel subclass
     description="Custom local search prompt with academic focus" # Optional
 )
 

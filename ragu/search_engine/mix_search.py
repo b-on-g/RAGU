@@ -1,17 +1,50 @@
 import asyncio
-from typing import Any, List
-from typing_extensions import override
+from dataclasses import dataclass, field
+from textwrap import dedent
+from typing import Any, List, Literal
 
-from pydantic import BaseModel
+from jinja2 import Template
+from typing_extensions import override
 
 from ragu.common.global_parameters import Settings
 from ragu.models.llm import LLM
-from ragu.search_engine.base_engine import BaseEngine
-from ragu.search_engine.types import MixSearchResult
-from ragu.utils.token_truncation import TokenTruncation
-
+from ragu.search_engine.base_engine import BaseEngine, SearchEngineRetrieve, SearchEngineResponse
 from ragu.common.prompts.prompt_storage import RAGUInstruction
 from ragu.common.prompts.messages import ChatMessages, render
+
+
+@dataclass(slots=True)
+class MixSearchResult:
+    """
+    Aggregated child-engine outputs.
+
+    ``results`` contains either retrieval containers from child ``a_search``
+    calls or full ``SearchEngineResponse`` objects from child ``a_query`` calls,
+    depending on the synthesis mode.
+    """
+    results: list[SearchEngineRetrieve[Any]] | list[SearchEngineResponse] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class MixSearchRetrieve(SearchEngineRetrieve[MixSearchResult]):
+    """
+    Retrieval container returned by :class:`MixSearchEngine`.
+
+    Metrics are currently empty; child-engine metrics remain available inside each entry.
+    """
+    result: MixSearchResult
+
+    def to_text(self) -> str:
+        """
+        Render each child engine result as a separate context section.
+        """
+        template = Template(dedent("""
+            {%- for retrieve in result.results %}
+            **Engine {{ loop.index }} Context**
+            {{ retrieve }}
+            {% endfor %}
+        """))
+        return template.render(result=self.result)
 
 
 class MixSearchEngine(BaseEngine):
@@ -31,7 +64,7 @@ class MixSearchEngine(BaseEngine):
         engines: List[BaseEngine],
         allow_partial_failures: bool = True,
         max_context_length: int = 30_000,
-        tokenizer_backend: str = "tiktoken",
+        tokenizer_backend: Literal["tiktoken", "local"] = "tiktoken",
         tokenizer_model: str = "gpt-4",
         language: str | None = None,
         *args: Any,
@@ -43,14 +76,22 @@ class MixSearchEngine(BaseEngine):
         :param llm: LLM used to generate the final synthesized answer.
         :param engines: Ordered list of child engines used for retrieval or answer ensembling.
         :param allow_partial_failures: Whether to tolerate failures from individual child engines.
-                                       Failed engines yield ``None`` in the ordered result list.
+                                       Failed engines are omitted from the result list.
         :param max_context_length: Max tokens allowed for the synthesized context after truncation.
         :param tokenizer_backend: Tokenizer backend used for token truncation.
         :param tokenizer_model: Model name used by the tokenizer backend.
         :param language: Default output language.
         """
         prompts = ["mix_search_context", "mix_search"]
-        super().__init__(llm=llm, prompts=prompts, *args, **kwargs)
+        super().__init__(
+            llm=llm,
+            prompts=prompts,
+            max_context_length=max_context_length,
+            tokenizer_backend=tokenizer_backend,
+            tokenizer_model=tokenizer_model,
+            *args,
+            **kwargs,
+        )
 
         self.engines = engines
         if not self.engines:
@@ -58,24 +99,20 @@ class MixSearchEngine(BaseEngine):
 
         self.allow_partial_failures = allow_partial_failures
         self.language = language if language else Settings.language
-        self.truncation = TokenTruncation(
-            tokenizer_model,
-            tokenizer_backend,
-            max_context_length,
-        )
 
     async def _search_all(
         self,
         query: str,
         *args: Any,
         **kwargs: Any,
-    ) -> list[Any | None]:
+    ) -> list[SearchEngineRetrieve]:
         """
         Execute ``a_search`` on each child engine.
 
         :param query: Input query string.
-        :return: Ordered list of per-engine search contexts. Failed engines return ``None`` when
-                 ``allow_partial_failures=True``.
+        :return: Ordered list of successful per-engine search contexts. Failed
+                 engines are omitted when ``allow_partial_failures=True``.
+        :raises RuntimeError: If every child engine fails.
         """
         tasks = [
             engine.a_search(query, *args, **kwargs)
@@ -83,16 +120,15 @@ class MixSearchEngine(BaseEngine):
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        contexts: list[Any | None] = []
+        contexts: list[SearchEngineRetrieve] = []
         for result in results:
             if isinstance(result, Exception):
                 if not self.allow_partial_failures:
                     raise result
-                contexts.append(None)
                 continue
             contexts.append(result)
 
-        if not any(context is not None for context in contexts):
+        if not contexts:
             raise RuntimeError("MixSearchEngine could not retrieve context from any child engine")
 
         return contexts
@@ -102,13 +138,14 @@ class MixSearchEngine(BaseEngine):
         query: str,
         *args: Any,
         **kwargs: Any,
-    ) -> list[Any | None]:
+    ) -> list[SearchEngineResponse]:
         """
         Execute ``a_query`` on each child engine.
 
         :param query: Input query string.
-        :return: Ordered list of per-engine answers. Failed engines return ``None`` when
-                 ``allow_partial_failures=True``.
+        :return: Ordered list of successful per-engine answers. Failed engines
+                 are omitted when ``allow_partial_failures=True``.
+        :raises RuntimeError: If every child engine fails.
         """
         tasks = [
             engine.a_query(query, *args, **kwargs)
@@ -116,31 +153,36 @@ class MixSearchEngine(BaseEngine):
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        contexts: list[Any | None] = []
+        contexts: list[SearchEngineResponse] = []
         for result in results:
             if isinstance(result, Exception):
                 if not self.allow_partial_failures:
                     raise result
-                contexts.append(None)
                 continue
             contexts.append(result)
 
-        if not any(context is not None for context in contexts):
+        if not contexts:
             raise RuntimeError("MixSearchEngine could not retrieve context from any child engine")
 
         return contexts
 
     @override
-    async def a_search(self, query: str, *args: Any, **kwargs: Any) -> MixSearchResult:
+    async def a_search(self, query: str, *args: Any, **kwargs: Any) -> MixSearchRetrieve:
         """
         Retrieve raw contexts from all child engines.
 
         :param query: Input query string.
-        :return: Ordered list of per-engine search contexts matching the engine order passed to
-                 the constructor. Failed engines are represented as ``None`` when partial failures
-                 are enabled.
+        :return: ``MixSearchRetrieve`` containing successful child retrieval
+                 contexts in engine order.
         """
-        return await self._search_all(query, *args, **kwargs)
+        results = await self._search_all(query, *args, **kwargs)
+
+        # TODO: maybe it is good idea to pass every child engine metrics in 'metrics' field here.
+        return MixSearchRetrieve(
+            query=query,
+            result=MixSearchResult(results=results),
+            metrics={}
+        )
 
     @override
     async def a_query(
@@ -149,7 +191,7 @@ class MixSearchEngine(BaseEngine):
         *args: Any,
         ensemble_responses: bool = False,
         **kwargs: Any,
-    ) -> str | BaseModel:
+    ) -> SearchEngineResponse:
         """
         Execute an ensemble query across child engines.
 
@@ -162,7 +204,8 @@ class MixSearchEngine(BaseEngine):
         :param query: Input query string.
         :param ensemble_responses: Whether to ensemble child-engine answers instead of child-engine
                                    search contexts.
-        :return: Generated answer as a string or Pydantic model when a response schema is set.
+        :return: ``SearchEngineResponse`` containing the synthesized answer and
+                 the child contexts or responses used for synthesis.
         """
         results = await (
             self._query_all(query, *args, **kwargs)
@@ -194,7 +237,19 @@ class MixSearchEngine(BaseEngine):
         )
         rendered = rendered_list[0]
 
-        return await self.llm.chat_completion(
+        response = await self.llm.chat_completion(
             conversation=rendered.to_openai(),
             output_schema=instruction.pydantic_model or str,  # type: ignore[arg-type]
         )  # type: ignore[return-value]
+
+        # TODO: maybe it is good idea to pass every child engine metrics in 'metrics' field here.
+        return SearchEngineResponse(
+            query=query,
+            response=response,
+            retrieval=MixSearchRetrieve(
+                query=query,
+                result=MixSearchResult(results),
+                metrics={}
+            ),
+            payload={}
+        )

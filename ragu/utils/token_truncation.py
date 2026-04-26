@@ -1,3 +1,5 @@
+from typing import Literal
+
 from ragu.common.logger import logger
 
 
@@ -15,7 +17,7 @@ class TokenTruncation:
     def __init__(
         self,
         model_id: str = "gpt-4o",
-        tokenizer_type: str = "tiktoken",
+        tokenizer_type: Literal["tiktoken", "local"] = "tiktoken",
         max_tokens: int = 30000,
         safe_decode: bool = True,
     ):

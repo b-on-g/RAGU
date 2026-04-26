@@ -16,6 +16,11 @@ async def _find_most_related_edges_from_entities(
     entities: list[Entity],
     knowledge_graph: KnowledgeGraph,
 ) -> list[Relation]:
+    """
+    Return unique graph edges adjacent to the seed entities.
+
+    Edges are deduplicated by stored relation ID and sorted by descending ``relation_strength``.
+    """
     entity_ids = [entity.id for entity in entities if entity and entity.id]
     if not entity_ids:
         return []
@@ -51,6 +56,12 @@ async def _find_most_related_text_unit_from_entities(
         entities: List[Entity],
         knowledge_graph: KnowledgeGraph
 ) -> list[Chunk]:
+    """
+    Return source chunks associated with seed entities.
+
+    Chunks are ordered first by the seed entity order, then by how many one-hop
+    neighboring entities share the same chunk.
+    """
     seed_entities = [entity for entity in entities if entity and entity.id]
     if not seed_entities:
         return []
@@ -69,7 +80,7 @@ async def _find_most_related_text_unit_from_entities(
             elif relation.object_id == seed_id:
                 neighbor_ids.append(relation.subject_id)
     neighbor_ids = list(dict.fromkeys(neighbor_ids))
-    neighbors = await knowledge_graph.index.get_entities(neighbor_ids)
+    neighbors = await knowledge_graph.index.get_nodes(neighbor_ids)
 
     all_one_hop_text_units_lookup = {
         neighbor.id : neighbor.source_chunk_id for neighbor in neighbors if neighbor is not None
@@ -111,6 +122,9 @@ async def _find_most_related_text_unit_from_entities(
     ]
 
 async def _find_documents_id(entities: List[Entity]):
+    """
+    Collect unique document IDs referenced by the supplied entities.
+    """
     documents_set = set()
     for entity in entities:
         if hasattr(entity, 'documents_id') and entity.documents_id:
@@ -123,6 +137,13 @@ async def _find_most_related_community_from_entities(
         knowledge_graph: KnowledgeGraph,
         level: int = 2
 ) -> list[CommunitySummary]:
+    """
+    Return community summaries linked to seed entity cluster memberships.
+
+    Only clusters with ``level <= level`` are considered. Cluster IDs may be
+    stored either as full community IDs or as numeric local cluster IDs that are
+    converted to stable :class:`Community` IDs.
+    """
     if not entities:
         return []
 
@@ -177,6 +198,11 @@ async def _rerank_items(
     text_getter: Callable[[T], str],
     reranker: Scorer | None,
 ) -> list[T]:
+    """
+    Rerank items with an optional scorer while preserving original items.
+
+    If ``reranker`` is not provided, items are returned unchanged.
+    """
     if reranker is None or not items:
         return items
 
@@ -187,6 +213,12 @@ async def _rerank_items(
     return [items[idx] for idx, _ in rerank_results if 0 <= idx < len(items)]
 
 def _topological_sort(subqueries: List[SubQuery]) -> List[SubQuery]:
+    """
+    Sort subqueries so dependencies appear before dependent subqueries.
+
+    :param subqueries: Query-plan nodes keyed by their ``id`` fields.
+    :return: Topologically ordered subquery list.
+    """
     by_id = {q.id: q for q in subqueries}
     visited = set()
     ordered: List[SubQuery] = []

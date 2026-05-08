@@ -1,5 +1,6 @@
 from typing import List, Tuple
 
+import numpy as np
 from ragu.chunker.types import Chunk
 from ragu.graph.types import Entity, Relation
 from ragu.models.embedder import Embedder
@@ -174,4 +175,4 @@ class GraphRetriever:
             if len(sparse_vectors) != 1:
                 raise ValueError("Sparse query embedder must return exactly one vector for one query")
             sparse_query = sparse_vectors[0]
-        return Point(dense_embedding=dense_query, sparse_embedding=sparse_query)
+        return Point(dense_embedding=np.array(dense_query), sparse_embedding=sparse_query)

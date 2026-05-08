@@ -1,7 +1,7 @@
 """
 Tests for Index batch CRUD operations and invariant validation.
 """
-
+import numpy as np
 import pytest
 from ragu.graph.types import Community, Entity, Relation
 from ragu.chunker.types import Chunk
@@ -150,7 +150,7 @@ async def test_build_query_vectors_returns_dense_and_sparse_payload(
 ):
     point = await sparse_retriever.build_query_vectors("alpha beta")
 
-    assert point.dense_embedding == [0.1] * 128
+    assert np.array_equal(np.array(point.dense_embedding), np.array([0.1] * 128))
     assert point.sparse_embedding is not None
     assert point.sparse_embedding.indices == [9]
     mock_embedder.embed_text.assert_awaited_once_with("alpha beta")

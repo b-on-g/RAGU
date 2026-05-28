@@ -5,6 +5,7 @@ from typing import Any, List, Literal
 
 from jinja2 import Template
 from ragu.common.global_parameters import Settings
+from ragu.common.logger import logger
 from ragu.common.prompts.default_models import GlobalSearchContextModel
 from ragu.common.prompts.messages import ChatMessages, render
 from ragu.common.prompts.prompt_storage import RAGUInstruction
@@ -37,16 +38,17 @@ class GlobalSearchRetrieve(SearchEngineRetrieve[GlobalSearchResult]):
     """
     result: GlobalSearchResult
 
+    _TO_TEXT_TEMPLATE = Template(dedent("""
+        {%- for insight in result.insights %}
+        {{ loop.index }}. Insight: {{ insight.response }}, rating: {{ insight.rating }}
+        {%- endfor %}
+    """))
+
     def to_text(self) -> str:
         """
         Render selected community insights for final answer synthesis.
         """
-        template = Template(dedent("""
-            {%- for insight in result.insights %}
-            {{ loop.index }}. Insight: {{ insight.response }}, rating: {{ insight.rating }}
-            {%- endfor %}
-        """))
-        return template.render(result=self.result)
+        return self._TO_TEXT_TEMPLATE.render(result=self.result)
 
 
 class GlobalSearchEngine(BaseEngine):
@@ -148,13 +150,23 @@ class GlobalSearchEngine(BaseEngine):
             language=self.language,
         )
 
-        meta_responses: List[GlobalSearchContextModel] = await asyncio.gather(*[
+        meta_results = await asyncio.gather(*[
             self.llm.chat_completion(
                 conversation=rendered.to_openai(),
                 output_schema=instruction.pydantic_model or str, # type: ignore
             )
             for rendered in rendered_list
-        ]) # type: ignore
+        ], return_exceptions=True) # type: ignore
+
+        meta_responses: List[GlobalSearchContextModel] = []
+        for i, result in enumerate(meta_results):
+            if isinstance(result, Exception):
+                logger.warning(
+                    "Global search meta-response failed for community {}: {}: {}",
+                    i, type(result).__name__, result,
+                )
+                continue
+            meta_responses.append(result)
 
         return meta_responses
 

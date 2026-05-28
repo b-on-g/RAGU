@@ -59,6 +59,14 @@ class ResponseCachingMixin:
         **kwargs: Any,
     ) -> T:
         """Caching wrapper for _uncached_chat_completion"""
+        if self.cache is None:
+            return await self._uncached_chat_completion(
+                model_name=model_name,
+                conversation=conversation,
+                output_schema=output_schema,
+                **kwargs,
+            )
+
         is_str = issubclass(output_schema, str)
         args: dict[str, Any] = {
             'cache_prefix': self.cache_prefix,
@@ -70,15 +78,12 @@ class ResponseCachingMixin:
         }
         key = json.dumps(args, sort_keys=True)
 
-        if self.cache is not None and (value := self.cache.get(key, None)):
+        if value := self.cache.get(key, None):
             logger.debug(f'Cache hit for {model_name}!')
             cached: str | dict[str, Any]
             _args, cached = value
             result = cached if is_str else output_schema.model_validate(cached)
             return cast(T, result)
-
-        # if self.cache is not None:
-        #     logger.debug(f'Cache miss for {model_name}!')
 
         response = await self._uncached_chat_completion(
             model_name=model_name,
@@ -89,8 +94,7 @@ class ResponseCachingMixin:
 
         cached = response if is_str else response.model_dump() # type: ignore
 
-        if self.cache is not None:
-            self.cache[key] = args, cached
+        self.cache[key] = args, cached
 
         return response
 
@@ -114,6 +118,13 @@ class ResponseCachingMixin:
         **kwargs: Any,
     ) -> list[float] | FLOATS:
         """Caching wrapper for _uncached_embed_text"""
+        if self.cache is None:
+            return await self._uncached_embed_text(
+                model_name=model_name,
+                text=text,
+                **kwargs,
+            )
+
         args: dict[str, Any] = {
             'cache_prefix': self.cache_prefix,
             'model_name': model_name,
@@ -123,14 +134,11 @@ class ResponseCachingMixin:
         }
         key = json.dumps(args, sort_keys=True)
 
-        if self.cache is not None and (value := self.cache.get(key, None)):
+        if value := self.cache.get(key, None):
             logger.debug(f'Cache hit for {model_name}!')
             cached: list[float] | FLOATS
             _args, cached = value
             return cached
-
-        # if self.cache is not None:
-        #     logger.debug(f'Cache miss for {model_name}!')
 
         response = await self._uncached_embed_text(
             model_name=model_name,
@@ -138,8 +146,7 @@ class ResponseCachingMixin:
             **kwargs,
         )
 
-        if self.cache is not None:
-            self.cache[key] = args, response
+        self.cache[key] = args, response
 
         return response
 
@@ -153,6 +160,67 @@ class ResponseCachingMixin:
         Abstract method to cache.
 
         kwargs are here to add custom arguments that will also be cached
+        """
+        raise NotImplementedError
+
+    async def _cached_embed_texts(
+        self,
+        model_name: str,
+        texts: list[str],
+        **kwargs: Any,
+    ) -> list[list[float] | FLOATS]:
+        """Batch-aware caching wrapper for _uncached_embed_texts.
+
+        Checks the cache individually for each text, sends only cache
+        misses to the API, then stores and returns the full result list
+        in the original order.
+        """
+        if self.cache is None:
+            return await self._uncached_embed_texts(
+                model_name=model_name, texts=texts, **kwargs
+            )
+
+        results: list[list[float] | FLOATS | None] = [None] * len(texts)
+        miss_indices: list[int] = []
+        miss_keys: list[str] = []
+        for i, text in enumerate(texts):
+            args: dict[str, Any] = {
+                'cache_prefix': self.cache_prefix,
+                'model_name': model_name,
+                'method': 'embed_text',
+                'text': text,
+                'kwargs': kwargs,
+            }
+            key = json.dumps(args, sort_keys=True)
+            if value := self.cache.get(key, None):
+                _, cached = value
+                results[i] = cached
+            else:
+                miss_indices.append(i)
+                miss_keys.append(key)
+
+        if miss_indices:
+            miss_texts = [texts[i] for i in miss_indices]
+            embeddings = await self._uncached_embed_texts(
+                model_name=model_name, texts=miss_texts, **kwargs
+            )
+            for idx, key, embedding in zip(miss_indices, miss_keys, embeddings):
+                results[idx] = embedding
+                self.cache[key] = args, embedding
+
+        return results  # type: ignore[return-value]
+
+    async def _uncached_embed_texts(
+        self,
+        model_name: str,
+        texts: list[str],
+        **kwargs: Any,
+    ) -> list[list[float] | FLOATS]:
+        """
+        Abstract batch embedding method.
+
+        Subclasses must implement this to send multiple texts in a single
+        API call.  kwargs are included for cache-key consistency.
         """
         raise NotImplementedError
 

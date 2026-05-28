@@ -131,8 +131,18 @@ docs = read_text_from_files("path/to/your/files")
 chunker = SimpleChunker(max_chunk_size=1000)
 
 # Set up artifact extractor
+from ragu.common.prompts import ICLConfig
+
+icl_config = ICLConfig(
+    enabled=True,
+    num_examples=2,
+    language="english",
+)
+
 artifact_extractor = TwoStageArtifactsExtractorLLM(
     llm=llm,
+    embedder=embedder,
+    icl_config=icl_config,
     do_entity_validation=True,
     do_relation_validation=True,
 )
@@ -301,23 +311,128 @@ BuilderArguments(
 )
 ```
 
-#### Storage Settings
+---
 
-RAGU stores graph structure, KV data, and vectors through pluggable adapters. See [storage docs](ragu/storage/README.md), [graph storage adapters](ragu/storage/graph_storage_adapters/README.md), and [vector DB adapters](ragu/storage/vdb_storage_adapters/README.md).
+#### Client and Rate Limiting Configuration
+
+`CachedAsyncOpenAI` is the network-level client shared by `LLMOpenAI` and `EmbedderOpenAI`. It controls rate limiting, retries, caching, and timeouts.
+
+**Shared client (simpler, works for most cases):**
 
 ```python
-from ragu import StorageArguments
-from ragu.storage.vdb_storage_adapters.qdrant_vdb import QdrantVectorDBStorage
+client = CachedAsyncOpenAI(
+    base_url="https://api.openai.com/v1",
+    api_key="sk-...",
+    rate_max_simultaneous=10,
+    rate_max_per_minute=100,
+    cache="./llm_cache",
+)
 
-storage_settings = StorageArguments(
-    vdb_storage_type=QdrantVectorDBStorage,
-    vdb_storage_kwargs={
-        "location": ":memory:",
-        # Use sparse_type="bm25", "bm42", or "splade" for hybrid retrieval.
-    },
+llm = LLMOpenAI(client=client, model_name="gpt-4o-mini")
+embedder = EmbedderOpenAI(client=client, model_name="text-embedding-3-large", dim=3072)
+```
+
+**Separate clients (recommended for large corpora or different providers):**
+
+When processing large corpora (thousands of entities and relations), LLM calls (slow, seconds per request) and embedding calls (fast but numerous) compete for the same connection pool and rate limiter. Using separate clients isolates their resources:
+
+```python
+llm_client = CachedAsyncOpenAI(
+    base_url="https://api.openai.com/v1",
+    api_key="sk-...",
+    rate_max_simultaneous=5,
+    rate_max_per_minute=60,
+    retry_times_sec=(4, 8, 16),
+    cache="./llm_cache",
+)
+
+embed_client = CachedAsyncOpenAI(
+    base_url="https://api.openai.com/v1",  # can be a different provider
+    api_key="sk-...",
+    rate_max_simultaneous=20,
+    rate_max_per_minute=500,
+    embed_timeout=60.0,
+    cache="./embed_cache",
+)
+
+llm = LLMOpenAI(client=llm_client, model_name="gpt-4o-mini")
+embedder = EmbedderOpenAI(
+    client=embed_client,
+    model_name="text-embedding-3-large",
+    dim=3072,
+    batch_size=500,
+    max_concurrent_batches=5,
 )
 ```
+
+**When a shared client is sufficient:**
+- Small to medium documents (up to ~1000 entities/relations)
+- Generous API provider rate limits
+- Both LLM and embedder use the same endpoint
+
+**When separate clients are recommended:**
+- Large corpora (thousands of entities and relations)
+- Strict API rate limits (low RPM)
+- LLM and embedder on different providers or endpoints
+- You need independent scaling of LLM vs. embedding throughput
+
+**Key parameters:**
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `rate_max_simultaneous` | Max concurrent in-flight requests | None (unlimited) |
+| `rate_max_per_minute` | Max requests per minute | None (unlimited) |
+| `rate_min_delay` | Min seconds between request starts | None |
+| `retry_times_sec` | Retry wait schedule on transient errors | `(2, 4, 8)` |
+| `embed_timeout` | Per-request timeout for embedding calls (seconds) | `60.0` |
+| `cache` | Cache directory path | None |
+
+`EmbedderOpenAI` also accepts:
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `batch_size` | Max texts per single API call | `500` |
+| `max_concurrent_batches` | Max concurrent batch API calls | `5` |
+
 ---
+
+#### In-Context Learning (Few-Shot Examples)
+
+RAGU extractors can use few-shot examples to improve extraction quality. When enabled, the extractor selects relevant examples and includes them in the LLM prompt. Four selection strategies are available:
+
+| Strategy | Description | Requires `embedder` |
+|----------|-------------|:---:|
+| `"semantic"` | Cosine similarity on dense embeddings (default) | Yes |
+| `"bm25"` | Lexical matching via BM25 — fast, no API calls | No |
+| `"hybrid"` | Reciprocal Rank Fusion of semantic + BM25 rankings | Yes |
+| `"random"` | Uniform random sampling — useful as a baseline | No |
+
+```python
+from ragu.common.prompts import ICLConfig
+
+icl_config = ICLConfig(
+    enabled=True,                       # Enable/disable ICL
+    num_examples=2,                     # Number of examples per extraction call (1-3 recommended)
+    selection_strategy="semantic",      # "semantic" | "bm25" | "hybrid" | "random"
+)
+
+artifact_extractor = TwoStageArtifactsExtractorLLM(
+    llm=llm,
+    embedder=embedder,                  # Required for "semantic" and "hybrid"; optional for "bm25" and "random"
+    icl_config=icl_config,
+)
+```
+
+Both `ArtifactsExtractorLLM` and `TwoStageArtifactsExtractorLLM` support ICL. An `embedder` is required for `"semantic"` and `"hybrid"` strategies; for `"bm25"` and `"random"` it can be omitted. Pre-built example files ship with RAGU in `ragu/common/prompts/icl_examples/`.
+
+To generate custom examples for your domain, use the generation script:
+
+```bash
+python scripts/generate_icl_examples.py --config config/icl_generation.yaml
+```
+
+---
+
 
 ### Knowledge Graph Construction
 Each text in corpus is processed to extract structured information. It consist of:
@@ -371,12 +486,12 @@ Each text in corpus is processed to extract structured information. It consist o
 #### 1. Default Pipeline
 
 File: ragu/triplet/llm_artifact_extractor.py.
-A baseline pipeline that uses LLM to extract entities, relations, and their descriptions in a single step.
+A baseline pipeline that uses LLM to extract entities, relations, and their descriptions in a single step. Supports optional in-context learning with few-shot examples and artifact validation.
 
 #### 2. Two-stage LLM Pipeline
 
 File: ragu/triplet/two_stage_extractor.py.
-Extracts entities first, then extracts relations constrained by the entity list. It can separately validate entity and relation outputs.
+Extracts entities first, then extracts relations constrained by the entity list. It can separately validate entity and relation outputs. Supports optional in-context learning with few-shot examples.
 
 #### 3. [RAGU-lm](https://huggingface.co/RaguTeam/RAGU-lm) (for russian language)
 A compact model (Qwen-3-0.6B) fine-tuned on the NEREL dataset.

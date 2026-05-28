@@ -1,4 +1,5 @@
 import asyncio
+import os
 
 from ragu import (
     ArtifactsExtractorLLM,
@@ -8,15 +9,11 @@ from ragu import (
     Settings,
     SimpleChunker,
 )
-from ragu.embedder import OpenAIEmbedder
-from ragu.models import OpenAIClient
+from ragu.common.prompts import ICLConfig
+from ragu.models.embedder import EmbedderOpenAI
+from ragu.models.llm import LLMOpenAI
+from ragu.models.openai import CachedAsyncOpenAI
 from ragu.utils.ragu_utils import read_text_from_files
-
-
-EMBEDDER_MODEL_NAME = "..."
-LLM_MODEL_NAME = "..."
-BASE_URL = "..."
-API_KEY = "..."
 
 
 async def main():
@@ -30,28 +27,43 @@ async def main():
     # Initialize chunker
     chunker = SimpleChunker(max_chunk_size=1000)
 
-    # Set up LLM client
-    client = OpenAIClient(
-        model_name=LLM_MODEL_NAME,
-        base_url=BASE_URL,
-        api_token=API_KEY,
-        max_requests_per_second=1,
-        max_requests_per_minute=60,
-        cache_flush_every=10,
+    base_url = os.getenv("OPENAI_BASE_URL")
+    api_key = os.getenv("OPENAI_API_KEY")
+    llm_model_name = os.getenv("LLM_MODEL_NAME")
+    embedder_model_name = os.getenv("EMBEDDER_MODEL_NAME")
+
+    # Set up shared OpenAI client with rate limiting
+    client = CachedAsyncOpenAI(
+        base_url=base_url,
+        api_key=api_key,
+        rate_max_simultaneous=10,
+        rate_max_per_minute=100,
     )
 
-    # Set up artifact extractor
-    artifact_extractor = ArtifactsExtractorLLM(llm=client, do_validation=False)
+    llm = LLMOpenAI(
+        client=client,
+        model_name=llm_model_name,
+    )
 
-    # Set up embedder
-    embedder = OpenAIEmbedder(
-        model_name=EMBEDDER_MODEL_NAME,
-        base_url=BASE_URL,
-        api_token=API_KEY,
-        dim=3072,
-        max_requests_per_second=1,
-        max_requests_per_minute=60,
-        use_cache=True,
+    embedder = EmbedderOpenAI(
+        client=client,
+        model_name=embedder_model_name,
+    )
+    await embedder.initialize()
+
+    # Configure in-context learning (optional, improves extraction quality)
+    icl_config = ICLConfig(
+        enabled=True,
+        num_examples=2,
+        selection_strategy="hybrid"
+    )
+
+    # Set up artifact extractor with ICL
+    artifact_extractor = ArtifactsExtractorLLM(
+        llm=llm,
+        embedder=embedder,
+        icl_config=icl_config,
+        do_validation=True,
     )
 
     # Configure graph builder
@@ -62,7 +74,7 @@ async def main():
 
     # Build knowledge graph
     knowledge_graph = KnowledgeGraph(
-        llm=client,
+        llm=llm,
         embedder=embedder,
         chunker=chunker,
         artifact_extractor=artifact_extractor,
@@ -72,7 +84,7 @@ async def main():
 
     # Set up search engine
     search_engine = LocalSearchEngine(
-        client,
+        llm,
         knowledge_graph,
         embedder,
         tokenizer_model="gpt-4o-mini",
@@ -82,11 +94,14 @@ async def main():
     questions = [
         "Кто написал гимн Норвегии?",
         "Шум, издаваемый ЭТИМИ ПАУКООБРАЗНЫМИ, слышен за пять километров. Отсюда и их название.",
-        "Как переводится роман 'Ка́мо гряде́ши, Го́споди?'"
+        "Как переводится название романа 'Ка́мо гряде́ши, Го́споди?' на русский языке"
     ]
 
     for question in questions:
-        print(await search_engine.a_query(question))
+        print(f'\nВопрос: {question}')
+        answer = await search_engine.a_query(question)
+        print(f'Ответ: {answer}')
+
 
 if __name__ == "__main__":
     asyncio.run(main())

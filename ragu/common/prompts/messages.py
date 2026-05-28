@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import (
+    TYPE_CHECKING,
     Literal,
     Dict,
     Any,
@@ -9,6 +12,7 @@ from typing import (
     Sequence,
     Mapping,
     Union,
+    Callable,
 )
 
 from jinja2 import Environment, StrictUndefined
@@ -20,6 +24,13 @@ from openai.types.chat import (
 )
 
 Role = Literal["system", "user", "assistant"]
+
+_JINJA_ENV = Environment(
+    undefined=StrictUndefined,
+    autoescape=False,
+    trim_blocks=True,
+    lstrip_blocks=True,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,13 +177,6 @@ def render(template_conversation: Union[BaseMessage, ChatMessages], **params: An
             row[k] = v[i] if _is_batch_value(v) else v
         return row
 
-    env = Environment(
-        undefined=StrictUndefined,
-        autoescape=False,
-        trim_blocks=True,
-        lstrip_blocks=True,
-    )
-
     if isinstance(template_conversation, BaseMessage):
         template_cm = ChatMessages.from_messages([template_conversation])
     else:
@@ -192,7 +196,7 @@ def render(template_conversation: Union[BaseMessage, ChatMessages], **params: An
 
         rendered_msgs: List[BaseMessage] = []
         for m in template_cm.messages:
-            tmpl = env.from_string(m.content)
+            tmpl = _JINJA_ENV.from_string(m.content)
             new_content = tmpl.render(**ctx)
 
             msg_type = type(m)
@@ -203,3 +207,36 @@ def render(template_conversation: Union[BaseMessage, ChatMessages], **params: An
         out.append(ChatMessages.from_messages(rendered_msgs))
 
     return out
+
+
+if TYPE_CHECKING:
+    from ragu.common.prompts.few_shot import FewShotFormatter
+
+
+def render_with_few_shots(
+    template_conversation: Union[BaseMessage, ChatMessages],
+    examples_list: List[List[dict[str, Any]] | None],
+    few_shot_formatter: FewShotFormatter | None = None,
+    **params: Any,
+) -> List[ChatMessages]:
+    conversations = render(template_conversation, **params)
+
+    if few_shot_formatter is None or not any(examples_list):
+        return conversations
+
+    result: List[ChatMessages] = []
+    for conv, examples in zip(conversations, examples_list):
+        if not examples:
+            result.append(conv)
+            continue
+
+        few_shot_pairs: List[BaseMessage] = []
+        for example in examples:
+            user_msg, ai_msg = few_shot_formatter(example)
+            few_shot_pairs.append(user_msg)
+            few_shot_pairs.append(ai_msg)
+
+        new_messages = list(conv.messages[:-1]) + few_shot_pairs + [conv.messages[-1]]
+        result.append(ChatMessages.from_messages(new_messages))
+
+    return result

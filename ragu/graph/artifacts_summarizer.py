@@ -142,14 +142,15 @@ class EntitySummarizer(RaguGenerativeModule):
             assert self.llm
             output_schema = instruction.pydantic_model
             assert output_schema is EntityDescriptionModel
-            response: Sequence[EntityDescriptionModel] = await self.llm.batch_chat_completion(
+            response: Sequence[EntityDescriptionModel | None] = await self.llm.batch_chat_completion(
                 conversations=[c.to_openai() for c in rendered_list],
                 output_schema=output_schema,
+                continue_on_error=True,
                 desc="Entity summarization",
-            ) # type: ignore
+            )
 
             for i, summary in enumerate(response):
-                if summary:
+                if summary is not None and getattr(summary, 'description', None) is not None:
                     entities_to_summarize[i].description = summary.description
         else:
             entities_to_summarize = [Entity(**row) for _, row in entity_multi_desc.iterrows()]
@@ -201,21 +202,40 @@ class EntitySummarizer(RaguGenerativeModule):
             for label, text in zip(labels, descriptions):
                 clusters.setdefault(int(label), []).append(text)
 
-            result_description: List[str] = []
-            for texts in clusters.values():
-                instruction: RAGUInstruction = self.get_prompt("cluster_summarize")
-                rendered_list: List[ChatMessages] = render(
-                    instruction.messages,
-                    content=texts,
-                    language=self.language,
-                )
+            instruction: RAGUInstruction = self.get_prompt("cluster_summarize")
 
-                result = await self.llm.batch_chat_completion(
-                    [c.to_openai() for c in rendered_list],
-                    output_schema=instruction.pydantic_model,
-                    desc="Map reduce for clustering",
-                )
-                result_description.extend([r.content for r in result if r])
+            all_texts_flat: List[str] = []
+            cluster_boundaries: List[tuple[int, int]] = []
+            for texts in clusters.values():
+                start = len(all_texts_flat)
+                all_texts_flat.extend(texts)
+                cluster_boundaries.append((start, len(all_texts_flat)))
+
+            rendered_list: List[ChatMessages] = render(
+                instruction.messages,
+                content=all_texts_flat,
+                language=self.language,
+            )
+
+            result_description: List[str] = []
+            results = await self.llm.batch_chat_completion(
+                [c.to_openai() for c in rendered_list],
+                output_schema=instruction.pydantic_model,
+                continue_on_error=True,
+                desc="Map reduce for clustering",
+            )
+            flat_results = [
+                r.content for r in results
+                if r is not None and getattr(r, 'content', None)
+            ]
+
+            for cluster_idx, (start, end) in enumerate(cluster_boundaries):
+                if flat_results:
+                    result_description.extend(flat_results[start:end])
+                else:
+                    result_description.extend(
+                        all_texts_flat[start:end]
+                    )
 
             return " ".join(result_description)
 
@@ -333,13 +353,14 @@ class RelationSummarizer(RaguGenerativeModule):
 
             output_schema = instruction.pydantic_model
             assert output_schema is RelationDescriptionModel
-            response: List[RelationDescriptionModel] = await self.llm.batch_chat_completion(
+            response: List[RelationDescriptionModel | None] = await self.llm.batch_chat_completion(
                 [c.to_openai() for c in rendered_list],
                 output_schema=output_schema,
-            ) # type: ignore
+                continue_on_error=True,
+            )
 
             for i, summary in enumerate(response):
-                if summary:
+                if summary is not None and getattr(summary, 'description', None) is not None:
                     relations_to_summarize[i].description = summary.description
         else:
             relations_to_summarize = [Relation(**row) for _, row in relation_multi_desc.iterrows()]

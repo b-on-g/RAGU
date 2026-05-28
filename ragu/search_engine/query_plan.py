@@ -1,6 +1,7 @@
 from typing import List, Dict, Tuple
 from typing_extensions import override
 
+from ragu.common.logger import logger
 from ragu.common.prompts.default_models import SubQuery, QueryPlan, RewriteQuery
 from ragu.search_engine.base_engine import BaseEngine, SearchEngineResponse, SearchEngineRetrieve
 from ragu.search_engine.search_functional import _topological_sort
@@ -57,7 +58,6 @@ class QueryPlanEngine(BaseEngine):
             rendered.to_openai(),
             output_schema=instruction.pydantic_model,
         )
-
         return response.subqueries
 
     async def _rewrite_subquery(self, subquery: SubQuery, context: Dict[str, SearchEngineResponse]) -> SubQuery:
@@ -85,8 +85,8 @@ class QueryPlanEngine(BaseEngine):
             rendered.to_openai(),
             output_schema=instruction.pydantic_model,
         )
-
         rewritten = response.query if isinstance(response, RewriteQuery) else response
+
         return subquery.model_copy(update={"query": rewritten})
 
     async def _answer_subquery(
@@ -128,6 +128,7 @@ class QueryPlanEngine(BaseEngine):
                  and ``payload`` contains all subquery responses by ID.
         """
         subqueries = await self.process_query(query)
+
         ordered = _topological_sort(subqueries)
 
         context: Dict[str,  SearchEngineResponse] = {}
@@ -137,10 +138,15 @@ class QueryPlanEngine(BaseEngine):
             context[subquery.id] = response
             retrieve[subquery.id] = response.retrieval
 
+        if not context:
+            return SearchEngineResponse(
+                query=query, response="", retrieval=None, payload={}  # type: ignore[arg-type]
+            )
+
         return SearchEngineResponse(
             query=query,
             response=context[ordered[-1].id].response,
-            retrieval=retrieve[ordered[-1].id],
+            retrieval=retrieve.get(ordered[-1].id),  # type: ignore[arg-type]
             payload=context,
         )
 

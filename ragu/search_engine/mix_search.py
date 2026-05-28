@@ -7,6 +7,7 @@ from jinja2 import Template
 from typing_extensions import override
 
 from ragu.common.global_parameters import Settings
+from ragu.common.logger import logger
 from ragu.models.llm import LLM
 from ragu.search_engine.base_engine import BaseEngine, SearchEngineRetrieve, SearchEngineResponse
 from ragu.common.prompts.prompt_storage import RAGUInstruction
@@ -34,17 +35,18 @@ class MixSearchRetrieve(SearchEngineRetrieve[MixSearchResult]):
     """
     result: MixSearchResult
 
+    _TO_TEXT_TEMPLATE = Template(dedent("""
+        {%- for retrieve in result.results %}
+        **Engine {{ loop.index }} Context**
+        {{ retrieve }}
+        {% endfor %}
+    """))
+
     def to_text(self) -> str:
         """
         Render each child engine result as a separate context section.
         """
-        template = Template(dedent("""
-            {%- for retrieve in result.results %}
-            **Engine {{ loop.index }} Context**
-            {{ retrieve }}
-            {% endfor %}
-        """))
-        return template.render(result=self.result)
+        return self._TO_TEXT_TEMPLATE.render(result=self.result)
 
 
 class MixSearchEngine(BaseEngine):

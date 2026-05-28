@@ -9,6 +9,7 @@ description = "GraphRAG system"
 requires-python = ">=3.10"
 dependencies = [
     "aiolimiter>=1.2.1",
+    "lingua-language-detector>=2.1.1",
     "loguru>=0.7.3",
     "nano-vectordb>=0.0.4.3",
     "networkx>=3.4.2",
@@ -47,6 +48,9 @@ test = [
 
 [tool.setuptools.packages.find]
 include = ["ragu*"]
+
+[tool.setuptools.package-data]
+"ragu" = ["common/prompts/icl_examples/*.json"]
 
 [tool.coverage.run]
 omit = [

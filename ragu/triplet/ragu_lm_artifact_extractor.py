@@ -82,30 +82,36 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
 
         contexts = [ChunkContext(chunk=chunk) for chunk in chunks]
 
-        # Stage 1: Extract raw entities from chunks
-        logger.info(f"Stage 1/4: Extracting entities from {len(chunks)} chunks...")
-        await self._batch_extract_entities(contexts)
-        total_raw = sum(len(ctx.raw_entities) for ctx in contexts)
-        logger.info(f"Extracted {total_raw} raw entities from {len(chunks)} chunks")
+        try:
+            # Stage 1: Extract raw entities from chunks
+            logger.info(f"Stage 1/4: Extracting entities from {len(chunks)} chunks...")
+            await self._batch_extract_entities(contexts)
+            total_raw = sum(len(ctx.raw_entities) for ctx in contexts)
+            logger.info(f"Extracted {total_raw} raw entities from {len(chunks)} chunks")
 
-        # Stage 2: Normalize entities
-        logger.info(f"Stage 2/4: Normalizing {total_raw} entities...")
-        await self._batch_normalize_entities(contexts)
-        total_normalized = sum(len(ctx.normalized_entities) for ctx in contexts)
-        logger.info(f"Normalized to {total_normalized} entities")
+            # Stage 2: Normalize entities
+            logger.info(f"Stage 2/4: Normalizing {total_raw} entities...")
+            await self._batch_normalize_entities(contexts)
+            total_normalized = sum(len(ctx.normalized_entities) for ctx in contexts)
+            logger.info(f"Normalized to {total_normalized} entities")
 
-        # Stage 3: Generate descriptions for entities
-        logger.info(f"Stage 3/4: Generating descriptions for {total_normalized} entities...")
-        await self._batch_generate_descriptions(contexts)
-        total_entities = sum(len(ctx.entities) for ctx in contexts)
-        logger.info(f"Created {total_entities} entity objects")
+            # Stage 3: Generate descriptions for entities
+            logger.info(f"Stage 3/4: Generating descriptions for {total_normalized} entities...")
+            await self._batch_generate_descriptions(contexts)
+            total_entities = sum(len(ctx.entities) for ctx in contexts)
+            logger.info(f"Created {total_entities} entity objects")
 
-        # Stage 4: Extract relations for entity pairs
-        total_pairs = sum(len(ctx.entities) * (len(ctx.entities) - 1) for ctx in contexts)
-        logger.info(f"Stage 4/4: Extracting relations for {total_pairs} entity pairs...")
-        await self._batch_extract_relations(contexts)
-        total_relations = sum(len(ctx.relations) for ctx in contexts)
-        logger.info(f"Extracted {total_relations} relations")
+            # Stage 4: Extract relations for entity pairs
+            total_pairs = sum(len(ctx.entities) * (len(ctx.entities) - 1) for ctx in contexts)
+            logger.info(f"Stage 4/4: Extracting relations for {total_pairs} entity pairs...")
+            await self._batch_extract_relations(contexts)
+            total_relations = sum(len(ctx.relations) for ctx in contexts)
+            logger.info(f"Extracted {total_relations} relations")
+        except Exception as e:
+            logger.warning(
+                "RAGU-LM extraction pipeline failed: {}: {}. Returning partial results.",
+                type(e).__name__, e,
+            )
 
         all_entities = [e for ctx in contexts for e in ctx.entities]
         all_relations = [r for ctx in contexts for r in ctx.relations]
@@ -136,6 +142,9 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
 
         # Parse responses back to contexts
         for ctx, response in zip(contexts, responses):
+            if response is None:
+                ctx.raw_entities = []
+                continue
             lines = response.splitlines()
             entities = [ln.strip() for ln in lines if ln.strip()]
             unique_entities = list(dict.fromkeys(entities))  # Preserve order, remove duplicates
@@ -258,6 +267,8 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
         context_candidates: Dict[int, List[Relation]] = {id(ctx): [] for ctx in contexts}
 
         for (ctx, subject, obj), response in zip(prompt_map, responses):
+            if response is None:
+                continue
             assert subject.id and obj.id, (
                 'On error here, decide what to do if .id is None,'
                 'but .subject_id and .object_id cannot be None'
@@ -278,17 +289,18 @@ class RaguLmArtifactExtractor(BaseArtifactExtractor):
             candidates = context_candidates[id(ctx)]
             ctx.relations = self.filter_relations(candidates)
 
-    async def _run(self, conversations: List[ChatMessages], description: str = "") -> List[str]:
+    async def _run(self, conversations: List[ChatMessages], description: str = "") -> List[str | None]:
         """
         Run LLM inference on a batch of conversations.
 
         :param conversations: List of ChatMessages to process.
         :param description: Description for progress bar.
-        :return: List of response strings.
+        :return: List of response strings.  ``None`` marks failed calls.
         """
         return self.llm.batch_chat_completion(
             [c.to_openai() for c in conversations],
             output_schema=str,
+            continue_on_error=True,
             temperature=self.temperature,
             top_p=self.top_p,
             desc=description,

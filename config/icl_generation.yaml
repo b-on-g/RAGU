@@ -1,0 +1,156 @@
+# Configuration for ICL example generation script
+# This script generates few-shot examples for stabilizing LLM-based extractors
+
+# Output settings
+output_path: "ragu/common/prompts/icl_examples/"
+
+# Languages to generate examples for
+languages:
+  - "english"
+  - "russian"
+
+# Prompt types to generate examples for
+# Only artifact extraction related prompts
+prompt_types:
+  - "artifact_extraction"
+  - "entity_extraction"
+  - "relation_extraction"
+  - "artifact_validation"
+  - "entity_validation"
+  - "relation_validation"
+
+# Model configuration
+generator_model:
+  base_url: "${GENERATOR_BASE_URL}"
+  api_key: "${GENERATOR_API_KEY}"
+  model_name: "${GENERATOR_MODEL_NAME}"  # e.g., "gpt4o"
+  temperature: 0.2  # Low temperature for consistency
+
+judge_model:
+  base_url: "${JUDGE_BASE_URL}"
+  api_key: "${JUDGE_API_KEY}"
+  model_name: "${JUDGE_MODEL_NAME}"  # e.g., "qwen3.6-max-preview"
+  temperature: 0.0  # Deterministic for judgment
+  min_quality_rating: 7  # 1-10 scale, keep >= 8
+
+# Custom input texts (optional)
+# When set, texts are loaded from this path instead of being synthesized.
+# Supported formats: directory of .txt files, .json array, or single .txt file.
+# Can also be set via --input-texts CLI flag (overrides this setting).
+# input_texts:
+#   path: "path/to/texts/"
+
+# Corpus generation settings (used when input_texts is not set)
+corpus:
+  total_texts: 20  # 30-50 texts
+  domains:
+    - "technology"
+    - "medicine"
+    - "finance"
+    - "science"
+    - "business"
+  difficulty_levels:
+    - "easy"
+    - "medium"
+    - "hard"
+
+# Artifact type constraints
+# When provided, the generator will use these types instead of inventing its own.
+# Defaults to NEREL types if omitted.
+entity_types:
+  - "AGE"
+  - "AWARD"
+  - "CITY"
+  - "COUNTRY"
+  - "CRIME"
+  - "DATE"
+  - "DISEASE"
+  - "DISTRICT"
+  - "EVENT"
+  - "FACILITY"
+  - "FAMILY"
+  - "IDEOLOGY"
+  - "LANGUAGE"
+  - "LAW"
+  - "LOCATION"
+  - "MONEY"
+  - "NATIONALITY"
+  - "NUMBER"
+  - "ORDINAL"
+  - "ORGANIZATION"
+  - "PENALTY"
+  - "PERCENT"
+  - "PERSON"
+  - "PRODUCT"
+  - "PROFESSION"
+  - "RELIGION"
+  - "STATE_OR_PROVINCE"
+  - "TIME"
+  - "TITLE"
+  - "WORK_OF_ART"
+
+relation_types:
+  - "ABBREVIATION"
+  - "AGE_DIED_AT"
+  - "AGE_IS"
+  - "AGENT"
+  - "ALTERNATIVE_NAME"
+  - "AWARDED_WITH"
+  - "CAUSE_OF_DEATH"
+  - "CONVICTED_OF"
+  - "DATE_DEFUNCT_IN"
+  - "DATE_FOUNDED_IN"
+  - "DATE_OF_BIRTH"
+  - "DATE_OF_CREATION"
+  - "DATE_OF_DEATH"
+  - "END_TIME"
+  - "EXPENDITURE"
+  - "FOUNDED_BY"
+  - "HAS_CAUSE"
+  - "HEADQUARTERED_IN"
+  - "IDEOLOGY_OF"
+  - "INANIMATE_INVOLVED"
+  - "INCOME"
+  - "KNOWS"
+  - "LOCATED_IN"
+  - "MEDICAL_CONDITION"
+  - "MEMBER_OF"
+  - "ORGANIZES"
+  - "ORIGINS_FROM"
+  - "OWNER_OF"
+  - "PARENT_OF"
+  - "PART_OF"
+  - "PARTICIPANT_IN"
+  - "PENALIZED_AS"
+  - "PLACE_OF_BIRTH"
+  - "PLACE_OF_DEATH"
+  - "PLACE_RESIDES_IN"
+  - "POINT_IN_TIME"
+  - "PRICE_OF"
+  - "PRODUCES"
+  - "RELATIVE"
+  - "RELIGION_OF"
+  - "SCHOOLS_ATTENDED"
+  - "SIBLING"
+  - "SPOUSE"
+  - "START_TIME"
+  - "SUBEVENT_OF"
+  - "SUBORDINATE_OF"
+  - "TAKES_PLACE_IN"
+  - "WORKPLACE"
+  - "WORKS_AS"
+
+# Quality filters
+quality_filters:
+  min_entities: 1
+  max_entities: 12
+  min_relations: 0
+  max_relations: 10
+  min_text_length: 80
+  max_text_length: 1200
+ 
+# Incremental update settings
+incremental:
+  enabled: true
+  preserve_existing: true  # Keep existing examples when adding new ones
+  generate_new_ids: true  # Use UUID/time-based IDs for new examples

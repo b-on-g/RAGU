@@ -5,6 +5,7 @@ from typing import Any, Optional, List, Literal
 from jinja2 import Template
 from ragu.chunker.types import Chunk
 from ragu.common.global_parameters import Settings
+from ragu.common.logger import logger
 from ragu.graph.graph_retrieve_backend import GraphRetriever
 from ragu.graph.knowledge_graph import KnowledgeGraph
 from ragu.models.embedder import Embedder

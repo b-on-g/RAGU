@@ -269,26 +269,6 @@ with tempfile.TemporaryDirectory() as directory:
     print(storage)
 ```
 
-### MemgraphStorage
-
-Memgraph-backed graph adapter.
-
-- Purpose: store graph nodes and edges in an external Memgraph database.
-
-```python
-from ragu.graph.types import Entity, Relation
-from ragu.storage.graph_storage_adapters.memgraph_adapter import MemgraphStorage
-
-storage = MemgraphStorage(
-    uri="bolt://localhost:7687",
-    username="memgraph",
-    password="dummy-password",
-    node_cls=Entity,
-    edge_cls=Relation,
-)
-print(storage)
-```
-
 ### JsonKVStorage
 
 JSON-backed KV adapter.

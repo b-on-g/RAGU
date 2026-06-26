@@ -4,6 +4,7 @@ from typing import Any, Literal, TypeVar, Generic
 
 from pydantic import BaseModel
 from ragu.common.base import RaguGenerativeModule
+from ragu.common.global_parameters import Settings
 from ragu.models.llm import LLM
 from ragu.utils.ragu_utils import always_get_an_event_loop
 from ragu.utils.token_truncation import TokenTruncation
@@ -67,25 +68,38 @@ class BaseEngine(RaguGenerativeModule, ABC):
         self,
         llm: LLM,
         *args: Any,
-        max_context_length: int = 30_000,
-        tokenizer_backend: Literal["tiktoken", "local"] = "tiktoken",
-        tokenizer_model: str = "gpt-4",
+        max_context_length: int | None = None,
+        tokenizer_backend: Literal["tiktoken", "local"] | None = None,
+        tokenizer_model: str | None = None,
         **kwargs: Any,
     ):
         """
         Initialize an engine with an LLM and context truncation settings.
 
+        Context truncation parameters default to the corresponding
+        :class:`GlobalSettings` fields when ``None`` (the default), so an
+        engine built without overrides behaves exactly as before. Pass
+        explicit values to configure a specific instance independently of the
+        global singleton (e.g. several engines with different LLMs / context
+        windows in the same process).
+
         :param llm: LLM used by concrete engines for answer generation.
-        :param max_context_length: Maximum context length after token truncation.
-        :param tokenizer_backend: Tokenizer backend used for truncation.
-        :param tokenizer_model: Tokenizer model name used by the backend.
+        :param max_context_length: Maximum number of tokens the assembled
+            context is truncated to. When ``None``, falls back to
+            ``Settings.llm_context_token_limit``.
+        :param tokenizer_backend: Tokenizer backend (``"tiktoken"`` or
+            ``"local"``). When ``None``, falls back to
+            ``Settings.tokenizer_llm_backend``.
+        :param tokenizer_model: Tokenizer model identifier (e.g.
+            ``"gpt-4o"``). When ``None``, falls back to
+            ``Settings.tokenizer_llm_name``.
         """
         super().__init__(*args, **kwargs)
         self.llm = llm
         self.truncation = TokenTruncation(
-            tokenizer_model,
-            tokenizer_backend,
-            max_context_length,
+            tokenizer_model or Settings.tokenizer_llm_name,
+            tokenizer_backend or Settings.tokenizer_llm_backend,
+            max_context_length if max_context_length is not None else Settings.llm_context_token_limit,
         )
 
     @abstractmethod

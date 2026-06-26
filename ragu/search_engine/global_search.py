@@ -64,10 +64,10 @@ class GlobalSearchEngine(BaseEngine):
         self,
         llm: LLM,
         knowledge_graph: KnowledgeGraph,
-        max_context_length: int = 30_000,
-        tokenizer_backend: Literal["tiktoken", "local"] = "tiktoken",
-        tokenizer_model: str = "gpt-4",
         language: str | None = None,
+        max_context_length: int | None = None,
+        tokenizer_backend: Literal["tiktoken", "local"] | None = None,
+        tokenizer_model: str | None = None,
         *args: Any,
         **kwargs: Any,
     ):
@@ -76,10 +76,13 @@ class GlobalSearchEngine(BaseEngine):
 
         :param llm: Language model client for meta-evaluation and final answer generation.
         :param knowledge_graph: Knowledge graph providing access to community-level summaries.
-        :param max_context_length: Maximum number of tokens allowed in the truncated context.
-        :param tokenizer_backend: Tokenizer backend used for token counting (default: ``"tiktoken"``).
-        :param tokenizer_model: Model name for tokenizer calibration (default: ``"gpt-4"``).
         :param language: Default output language (fed into prompt templates).
+        :param max_context_length: Maximum tokens for the assembled context fed to
+            the LLM. When ``None``, falls back to ``Settings.llm_context_token_limit``.
+        :param tokenizer_backend: Tokenizer backend for context truncation. When
+            ``None``, falls back to ``Settings.tokenizer_llm_backend``.
+        :param tokenizer_model: Tokenizer model identifier for context truncation.
+            When ``None``, falls back to ``Settings.tokenizer_llm_name``.
         """
         _PROMPTS = ["global_search_context", "global_search"]
         super().__init__(

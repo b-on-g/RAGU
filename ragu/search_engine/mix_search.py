@@ -7,7 +7,6 @@ from jinja2 import Template
 from typing_extensions import override
 
 from ragu.common.global_parameters import Settings
-from ragu.common.logger import logger
 from ragu.models.llm import LLM
 from ragu.search_engine.base_engine import BaseEngine, SearchEngineRetrieve, SearchEngineResponse
 from ragu.common.prompts.prompt_storage import RAGUInstruction
@@ -65,10 +64,10 @@ class MixSearchEngine(BaseEngine):
         llm: LLM,
         engines: List[BaseEngine],
         allow_partial_failures: bool = True,
-        max_context_length: int = 30_000,
-        tokenizer_backend: Literal["tiktoken", "local"] = "tiktoken",
-        tokenizer_model: str = "gpt-4",
         language: str | None = None,
+        max_context_length: int | None = None,
+        tokenizer_backend: Literal["tiktoken", "local"] | None = None,
+        tokenizer_model: str | None = None,
         *args: Any,
         **kwargs: Any,
     ):
@@ -79,10 +78,16 @@ class MixSearchEngine(BaseEngine):
         :param engines: Ordered list of child engines used for retrieval or answer ensembling.
         :param allow_partial_failures: Whether to tolerate failures from individual child engines.
                                        Failed engines are omitted from the result list.
-        :param max_context_length: Max tokens allowed for the synthesized context after truncation.
-        :param tokenizer_backend: Tokenizer backend used for token truncation.
-        :param tokenizer_model: Model name used by the tokenizer backend.
         :param language: Default output language.
+        :param max_context_length: Maximum tokens for the assembled context fed to
+            the LLM. When ``None``, falls back to ``Settings.llm_context_token_limit``.
+            This truncation is applied only to the MixSearchEngine's own final context
+            and is NOT propagated to the child engines (each child keeps its own
+            tokenizer configuration).
+        :param tokenizer_backend: Tokenizer backend for context truncation. When
+            ``None``, falls back to ``Settings.tokenizer_llm_backend``.
+        :param tokenizer_model: Tokenizer model identifier for context truncation.
+            When ``None``, falls back to ``Settings.tokenizer_llm_name``.
         """
         prompts = ["mix_search_context", "mix_search"]
         super().__init__(

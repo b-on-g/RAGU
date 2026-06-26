@@ -22,8 +22,40 @@ The module keeps shared behavior out of the domain packages. It centralizes the 
 Singleton instance of `GlobalSettings`.
 
 - Purpose: stores process-wide defaults.
-- Important fields: `language`, `storage_folder`.
+- Important fields: `language`, `storage_folder`, tokenizer backends/names,
+  token limits (`embedder_token_limit`, `llm_context_token_limit`), cache
+  paths (`cache_path`, `debug_errors_path`).
+- Tokenizer backend fields (`tokenizer_embedder_backend`,
+  `tokenizer_llm_backend`) are typed as `Literal["tiktoken", "local"]`; the
+  same constraint applies to the `tokenizer_backend` parameter of
+  `EmbedderOpenAI`.
 - Used by: storage initialization, prompts, builders, search engines, sparse embedders.
+- Serialization: `Settings.save(path)` / `Settings.load(path)` persist and
+  restore the user-configurable fields as JSON. Serialization is **never**
+  invoked automatically (there are no constructor/destructor hooks): you decide
+  when to persist and reload.
+  - Serialized fields: `language`, `tokenizer_embedder_backend`,
+    `tokenizer_llm_backend`, `tokenizer_embedder_name`, `tokenizer_llm_name`,
+    `embedder_token_limit`, `llm_context_token_limit`.
+  - **Not** serialized: `storage_folder` (it contains a runtime timestamp by
+    default, and restoring it silently would redirect subsequent writes into a
+    stale directory — manage it explicitly), `cache_path` and
+    `debug_errors_path` (local, machine-specific paths), and internal state
+    (singleton handle, current timestamp).
+  - `load` validates every value against the declared type hints and raises
+    `ValueError` on a mismatch (e.g. an unknown tokenizer backend or a
+    non-positive token limit). Unknown keys are reported via a warning and
+    ignored, so files produced by a newer RAGU version remain loadable.
+- Token-limit defaults: `embedder_token_limit` is used by `EmbedderOpenAI`
+  (embedding input truncation); `llm_context_token_limit` is used by search
+  engines (LLM context truncation during indexing/answering).
+- Cache paths: `cache_path` and `debug_errors_path` default to `None`
+  (disabled). When a `CachedAsyncOpenAI` is constructed without an explicit
+  `cache` / `debug_errors_storage`, these Settings values are used. They are
+  **deliberately independent of `storage_folder`**: the cache must be a stable,
+  long-lived path that survives across runs, whereas `storage_folder` is
+  per-run. Beware of stale hits — bump `cache_prefix` or clear the directory
+  when changing model, temperature, or provider behavior.
 
 ```python
 from ragu.common.global_parameters import Settings
@@ -33,6 +65,10 @@ Settings.storage_folder = "./ragu_working_dir/demo"
 Settings.init_storage_folder()
 
 print(Settings.storage_folder)
+
+# Persist / restore the configuration as a JSON artifact.
+Settings.save("./demo/ragu_settings.json")
+Settings.load("./demo/ragu_settings.json")
 ```
 
 ### Env
@@ -264,6 +300,12 @@ External:
 ## Notes / Pitfalls
 
 - `Settings` is global process state. Set `Settings.storage_folder` before constructing `KnowledgeGraph` or `Index`.
+- The `tokenizer_*_name` fields drive only token counting for truncation in
+  `EmbedderOpenAI` and `BaseEngine`; they are **not** derived from `Env`.
+  When you switch the LLM via `Env.llm_model_name`, update
+  `Settings.tokenizer_llm_name` accordingly (and `Settings.tokenizer_embedder_name`
+  when you swap the embedder). Otherwise truncation is computed against the
+  wrong tokenizer's token counts.
 - Jinja rendering uses `StrictUndefined`; missing template variables raise errors.
 - `render()` treats any list or tuple parameter as batched input.
 - Default prompt names must exist in `DEFAULT_PROMPT_TEMPLATES`, otherwise `get_prompt()` can return `None` at construction time and fail later.

@@ -115,10 +115,10 @@ class LocalSearchEngine(BaseEngine):
         embedder: Embedder,
         sparse_embedder: SparseEmbedder | None = None,
         reranker: Scorer | None = None,
-        max_context_length: int = 30_000,
-        tokenizer_backend: Literal["tiktoken", "local"] = "tiktoken",
-        tokenizer_model: str = "gpt-4",
         language: str | None = None,
+        max_context_length: int | None = None,
+        tokenizer_backend: Literal["tiktoken", "local"] | None = None,
+        tokenizer_model: str | None = None,
         *args: Any,
         **kwargs: Any,
     ):
@@ -130,10 +130,13 @@ class LocalSearchEngine(BaseEngine):
         :param embedder: Dense embedder used for retrieval queries.
         :param sparse_embedder: Optional sparse embedder used for hybrid retrieval queries.
         :param reranker: Optional reranker used to reorder retrieved context sections.
-        :param max_context_length: Max tokens allowed for the final context (after truncation).
-        :param tokenizer_backend: Tokenizer backend used for token counting/truncation.
-        :param tokenizer_model: Model name used by the tokenizer backend.
         :param language: Default output language (fed into prompt template).
+        :param max_context_length: Maximum tokens for the assembled context fed to
+            the LLM. When ``None``, falls back to ``Settings.llm_context_token_limit``.
+        :param tokenizer_backend: Tokenizer backend for context truncation. When
+            ``None``, falls back to ``Settings.tokenizer_llm_backend``.
+        :param tokenizer_model: Tokenizer model identifier for context truncation.
+            When ``None``, falls back to ``Settings.tokenizer_llm_name``.
         """
         _PROMPTS_NAMES = ["local_search"]
         super().__init__(

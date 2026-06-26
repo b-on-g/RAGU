@@ -32,12 +32,12 @@ from ragu.models.embedder import EmbedderOpenAI
 from ragu.models.openai import CachedAsyncOpenAI
 
 client = CachedAsyncOpenAI(
-    base_url="https://api.openai.com/v1", 
+    base_url="https://api.openai.com/v1",
     api_key="dummy-api-token"
 )
 embedder = EmbedderOpenAI(
-    client=client, 
-    model_name="text-embedding-3-small", 
+    client=client,
+    model_name="text-embedding-3-small",
     dim=1536
 )
 
@@ -109,19 +109,19 @@ Directed graph edge dataclass.
 
 > NOTE: custom relation extraction is not supported in RAGU versions 0.0.1 and 0.0.2.
 > Full support expected in 0.0.3.
-> 
+>
 ```python
 from ragu.graph.types import Entity, Relation
 
 python = Entity(
-    entity_name="Python", 
-    entity_type="Language", 
-    description="A programming language.", 
+    entity_name="Python",
+    entity_type="Language",
+    description="A programming language.",
     source_chunk_id=["chunk-1"]
 )
 guido = Entity(
     entity_name="Guido van Rossum",
-    entity_type="Person", 
+    entity_type="Person",
     description="Creator of Python.",
     source_chunk_id=["chunk-1"]
 )
@@ -150,16 +150,16 @@ class EvidenceRelation(Relation):
 
 
 python = Entity(
-    entity_name="Python", 
-    entity_type="Language", 
-    description="A programming language.", 
+    entity_name="Python",
+    entity_type="Language",
+    description="A programming language.",
     source_chunk_id=["chunk-1"]
 )
 
 # "Short" creation
 guido = Entity(
-    "Guido van Rossum", 
-    "Person", 
+    "Guido van Rossum",
+    "Person",
     "Creator of Python.",
     ["chunk-1"]
 )
@@ -186,7 +186,7 @@ Configuration for build behavior.
 - `build_only_vector_context`: skip graph artifact extraction and store chunks only.
 - `make_community_summary`: run community detection and summarization.
 - `remove_isolated_nodes`: add `RemoveIsolatedNodes` post-processor.
-- `vectorize_chunks`: stored on `KnowledgeGraph`; chunk vectorization currently happens in `Index.upsert_chunks`.
+- `vectorize_chunks`: **currently a no-op**, kept for backward compatibility. Chunk vectorization always happens inside `Index.upsert_chunks` regardless of this value.
 
 #### Pipeline preset: chunk-vector index only
 

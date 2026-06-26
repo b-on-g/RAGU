@@ -116,15 +116,8 @@ print(normalizer.normalize_batch(["кошки бегали"]))
 
 Testing server for OpenAI-compatible endpoints.
 
-- Purpose: deterministic tests for LLM wrappers and structured output behavior.
-
-```python
-from ragu.utils.testing.openai_mock_server import OpenAIMockServer
-
-server = OpenAIMockServer(("127.0.0.1", 0))
-print(server.server_port)
-server.server_close()
-```
+- Purpose: deterministic tests for LLM/embedder wrappers and structured-output behavior.
+- Canonical reference and examples: [`ragu/utils/testing/README.md`](testing/README.md).
 
 ## Data Flow
 
@@ -203,7 +196,7 @@ External:
 - `diskcache`
 - `numpy`
 - tokenizer libraries used by `TokenTruncation`
-- optional `pymorphy2` or compatible packages for morphology normalization
+- `pymorphy3` for Russian morphology normalization (see `pyproject.toml`)
 
 ## Notes / Pitfalls
 

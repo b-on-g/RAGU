@@ -19,7 +19,12 @@ class JsonKVStorage(BaseKVStorage[dict[str, T]]):
     All data is loaded into memory at initialization and written back to disk upon updates.
     """
 
-    def __init__(self, storage_folder: str = Settings.storage_folder, filename: str = "kv_store.json"):
+    def __init__(
+        self,
+        storage_folder: str = Settings.storage_folder,
+        filename: str = "kv_store.json",
+        create_if_missing: bool = True,
+    ):
         """
         Initialize the JSON key-value storage.
 
@@ -27,12 +32,15 @@ class JsonKVStorage(BaseKVStorage[dict[str, T]]):
 
         :param storage_folder: Path to the folder where the storage file will be located.
         :param filename: Name of the JSON file used for storage.
+        :param create_if_missing: Whether an empty file is created immediately
+            when the storage file does not exist.
         """
         self.filename = os.path.join(storage_folder, filename)
         if not os.path.exists(self.filename):
             self.data: dict[str, dict[str, T]] = {}
-            with open(self.filename, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, indent=2, ensure_ascii=False)
+            if create_if_missing:
+                with open(self.filename, "w", encoding="utf-8") as f:
+                    json.dump(self.data, f, indent=2, ensure_ascii=False)
         else:
             with open(self.filename, encoding="utf-8") as f:
                 self.data = json.load(f)

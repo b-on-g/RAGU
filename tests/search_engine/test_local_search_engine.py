@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from ragu.chunker.types import Chunk
+from ragu.common.types import SourceDocument
 from ragu.graph.types import Entity, Relation, CommunitySummary
 from ragu.search_engine.base_engine import SearchEngineResponse
 from ragu.search_engine.local_search import LocalSearchEngine, LocalSearchResult, LocalSearchRetrieve
@@ -117,6 +118,59 @@ async def test_local_search_reranks_entities_relations_summaries_and_chunks(monk
 
 
 @pytest.mark.asyncio
+async def test_local_search_loads_source_documents(monkeypatch):
+    entity_a = Entity(
+        entity_name="Alpha",
+        entity_type="Person",
+        description="First entity",
+        source_chunk_id=["chunk-a"],
+        documents_id=["doc-a"],
+    )
+    entity_b = Entity(
+        entity_name="Beta",
+        entity_type="Place",
+        description="Second entity",
+        source_chunk_id=["chunk-b"],
+        documents_id=["doc-b", "doc-a"],
+    )
+    kg = SimpleNamespace(
+        get_documents_by_ids=AsyncMock(return_value=[
+            SourceDocument(doc_id="doc-a", content="Raw alpha"),
+            SourceDocument(doc_id="doc-b", content="Raw beta"),
+        ])
+    )
+
+    from ragu.search_engine import local_search as local_module
+    monkeypatch.setattr(local_module, "_find_most_related_edges_from_entities", AsyncMock(return_value=[]))
+    monkeypatch.setattr(local_module, "_find_most_related_text_unit_from_entities", AsyncMock(return_value=[]))
+    monkeypatch.setattr(local_module, "_find_most_related_community_from_entities", AsyncMock(return_value=[]))
+
+    engine = LocalSearchEngine(
+        llm=SimpleNamespace(chat_completion=AsyncMock()),
+        knowledge_graph=kg,
+        embedder=_make_embedder_mock(),
+    )
+    engine.retriever.query_entities = AsyncMock(
+        return_value=(
+            [entity_a, entity_b],
+            [
+                EmbeddingHit(id=entity_a.id, distance=0.9),
+                EmbeddingHit(id=entity_b.id, distance=0.8),
+            ],
+        )
+    )
+
+    result = await engine.a_search("query", include_source_documents=True)
+
+    assert result.result.documents_id == ["doc-a", "doc-b"]
+    assert result.result.source_documents == [
+        SourceDocument(doc_id="doc-a", content="Raw alpha"),
+        SourceDocument(doc_id="doc-b", content="Raw beta"),
+    ]
+    kg.get_documents_by_ids.assert_awaited_once_with(["doc-a", "doc-b"])
+
+
+@pytest.mark.asyncio
 async def test_local_query_returns_raw_result_when_no_response_attr(monkeypatch, real_kg):
     llm = SimpleNamespace(chat_completion=AsyncMock(return_value="raw-result"))
     engine = LocalSearchEngine(llm=llm, knowledge_graph=real_kg, embedder=_make_embedder_mock())
@@ -138,3 +192,40 @@ async def test_local_query_returns_raw_result_when_no_response_attr(monkeypatch,
     result = await engine.a_query("question")
     assert isinstance(result, SearchEngineResponse)
     assert result.response == "raw-result"
+
+
+@pytest.mark.asyncio
+async def test_local_query_adds_source_documents_to_payload(monkeypatch, real_kg):
+    llm = SimpleNamespace(chat_completion=AsyncMock(return_value="raw-result"))
+    engine = LocalSearchEngine(llm=llm, knowledge_graph=real_kg, embedder=_make_embedder_mock())
+    engine.truncation = lambda s: s
+    engine.a_search = AsyncMock(
+        return_value=LocalSearchRetrieve(
+            query="question",
+            result=LocalSearchResult(
+                source_documents=[
+                    SourceDocument(doc_id="doc-a", content="Raw alpha"),
+                ]
+            ),
+        )
+    )
+
+    from ragu.search_engine import local_search as local_module
+    monkeypatch.setattr(
+        local_module,
+        "render",
+        lambda messages, **kwargs: [SimpleNamespace(to_openai=lambda: [{"role": "user", "content": "prompt"}])],
+    )
+    monkeypatch.setattr(
+        engine,
+        "get_prompt",
+        lambda _: SimpleNamespace(messages=[{"role": "user", "content": "{{query}}"}], pydantic_model=None),
+    )
+
+    result = await engine.a_query("question", include_source_documents=True)
+
+    assert result.payload == {
+        "source_documents": [
+            {"doc_id": "doc-a", "content": "Raw alpha", "metadata": {}},
+        ]
+    }

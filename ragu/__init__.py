@@ -12,6 +12,7 @@ from ragu.graph.index import StorageArguments
 # Global settings
 from ragu.common.env import Env
 from ragu.common.global_parameters import Settings
+from ragu.common.types import SourceDocument
 
 # Search engines
 from ragu.search_engine import (
@@ -42,6 +43,7 @@ __all__ = [
     "MixSearchEngine",
     "NaiveSearchEngine",
     "QueryPlanEngine",
+    "SourceDocument",
     "ArtifactsExtractorLLM",
     "TwoStageArtifactsExtractorLLM",
     "RaguLmArtifactExtractor",

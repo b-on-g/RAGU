@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from textwrap import dedent
 from typing import Any, Optional, List, Literal
 
@@ -16,8 +16,10 @@ from ragu.search_engine.base_engine import (
     SearchEngineRetrieve,
     SearchEngineResponse
 )
+from ragu.search_engine.search_functional import _load_source_documents
 from ragu.common.prompts.prompt_storage import RAGUInstruction
 from ragu.common.prompts.messages import ChatMessages, render
+from ragu.common.types import SourceDocument
 
 
 @dataclass(slots=True)
@@ -32,6 +34,7 @@ class NaiveSearchResult:
     chunks: list[Chunk] = field(default_factory=list)
     scores: list[float] = field(default_factory=list)
     documents_id: list[str] = field(default_factory=list)
+    source_documents: list[SourceDocument] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -122,6 +125,9 @@ class NaiveSearchEngine(BaseEngine):
         query: str,
         top_k: int = 20,
         rerank_top_k: Optional[int] = None,
+        include_source_documents: bool = False,
+        source_documents_top_k: int | None = None,
+        source_document_max_chars: int | None = None,
         *args: Any,
         **kwargs: Any,
     ) -> NaiveSearchRetrieve:
@@ -132,6 +138,9 @@ class NaiveSearchEngine(BaseEngine):
         :param top_k: Number of top chunks to retrieve initially.
         :param rerank_top_k: Number of chunks to keep after reranking.
                              If None, keeps all reranked chunks. Used only when reranker is set.
+        :param include_source_documents: Whether raw source documents are returned.
+        :param source_documents_top_k: Optional maximum number of source documents returned.
+        :param source_document_max_chars: Optional maximum characters per source document.
         :return: ``NaiveSearchRetrieve`` with retrieved chunks, aligned scores,
                  document IDs, and chunk rank metrics.
         """
@@ -161,7 +170,17 @@ class NaiveSearchEngine(BaseEngine):
                 chunks = chunks[:rerank_top_k]
                 scores = scores[:rerank_top_k]
 
-        documents_id = list({c.doc_id for c in chunks if c.doc_id})
+        documents_id = list(dict.fromkeys(c.doc_id for c in chunks if c.doc_id))
+        source_documents = (
+            await _load_source_documents(
+                self.graph,
+                documents_id,
+                source_documents_top_k=source_documents_top_k,
+                source_document_max_chars=source_document_max_chars,
+            )
+            if include_source_documents
+            else []
+        )
 
         return NaiveSearchRetrieve(
             query=query,
@@ -169,6 +188,7 @@ class NaiveSearchEngine(BaseEngine):
                 chunks=chunks,
                 scores=scores,
                 documents_id=documents_id,
+                source_documents=source_documents,
             ),
             metrics={
                 "chunks": [
@@ -182,17 +202,35 @@ class NaiveSearchEngine(BaseEngine):
             },
         )
 
-    async def a_query(self, query: str, top_k: int = 20, rerank_top_k: Optional[int] = None) -> SearchEngineResponse:
+    async def a_query(
+        self,
+        query: str,
+        top_k: int = 20,
+        rerank_top_k: Optional[int] = None,
+        include_source_documents: bool = False,
+        source_documents_top_k: int | None = None,
+        source_document_max_chars: int | None = None,
+    ) -> SearchEngineResponse:
         """
         Execute a retrieval-augmented query using naive vector search.
 
         :param query: User query in natural language.
         :param top_k: Number of chunks to search initially (default: 20).
         :param rerank_top_k: Number of chunks to use after reranking (default: None = use all).
+        :param include_source_documents: Whether raw source documents are returned in payload.
+        :param source_documents_top_k: Optional maximum number of source documents returned.
+        :param source_document_max_chars: Optional maximum characters per source document.
         :return: ``SearchEngineResponse`` containing the generated answer and
                  the ``NaiveSearchRetrieve`` used as context.
         """
-        context: NaiveSearchRetrieve = await self.a_search(query, top_k, rerank_top_k)
+        context: NaiveSearchRetrieve = await self.a_search(
+            query,
+            top_k,
+            rerank_top_k,
+            include_source_documents=include_source_documents,
+            source_documents_top_k=source_documents_top_k,
+            source_document_max_chars=source_document_max_chars,
+        )
         truncated_context: str = self.truncation(str(context))
 
         instruction: RAGUInstruction = self.get_prompt("naive_search")
@@ -210,9 +248,16 @@ class NaiveSearchEngine(BaseEngine):
             output_schema=instruction.pydantic_model
         ) # type: ignore
 
+        payload: dict[str, Any] = {}
+        if include_source_documents:
+            payload["source_documents"] = [
+                asdict(document)
+                for document in context.result.source_documents
+            ]
+
         return SearchEngineResponse(
             query=query,
             response=answer,
             retrieval=context,
-            payload={}
+            payload=payload
         )

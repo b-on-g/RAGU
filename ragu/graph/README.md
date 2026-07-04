@@ -22,7 +22,7 @@ The module exists to keep graph construction and graph persistence independent f
 High-level facade for build, CRUD, reindexing, and storage access.
 
 - Purpose: orchestrates chunking, extraction, graph construction, vectorization, and persistence.
-- Important methods: `build_from_docs`, `upsert_entities`, `upsert_relations`, `get_entities`, `get_relations`, `get_chunks`, `reindex_community`, `reindex_descriptions`, `reindex_graph`.
+- Important methods: `build_from_docs`, `upsert_entities`, `upsert_relations`, `get_entities`, `get_relations`, `get_chunks`, `upsert_documents`, `get_documents_by_ids`, `reindex_community`, `reindex_descriptions`, `reindex_graph`.
 - Important parameters: `llm`, `embedder`, optional `sparse_embedder`, `chunker`, `artifact_extractor`, `builder_settings`, `storage_settings`.
 
 ```python
@@ -228,6 +228,8 @@ asyncio.run(main())
 
 This preset is for naive vector RAG. It stores chunks and chunk vectors, but skips entity/relation extraction, graph edges, communities, and community summaries.
 
+`build_from_docs()` also stores raw source documents before chunking in the document KV store. Search engines can return those raw documents later when called with `include_source_documents=True`.
+
 #### Pipeline preset: fast graph extraction without LLM summarization
 
 ```python
@@ -412,8 +414,8 @@ asyncio.run(main())
 
 Storage coordinator.
 
-- Purpose: keeps graph backend, vector DBs, chunk KV, community KV, and summary KV in sync.
-- Important methods: `upsert_nodes`, `upsert_edges`, `upsert_chunks`, `delete_chunks`, `check_consistency`.
+- Purpose: keeps graph backend, vector DBs, chunk KV, document KV, community KV, and summary KV in sync.
+- Important methods: `upsert_nodes`, `upsert_edges`, `upsert_chunks`, `upsert_documents`, `get_documents_by_ids`, `delete_chunks`, `check_consistency`.
 - Storage defaults: `NetworkXStorage`, `JsonKVStorage`, `NanoVectorDBStorage`.
 
 ```python
@@ -478,7 +480,7 @@ Output:
 
 - graph backend nodes and directed multigraph edges
 - vector records for entities, relations, and chunks
-- KV records for chunks, communities, and community summaries
+- KV records for chunks, raw source documents, communities, and community summaries
 
 Used by:
 

@@ -133,7 +133,7 @@ print(edge_spec)
 
 Key-value storage contract.
 
-- Purpose: store chunks, communities, and summaries.
+- Purpose: store chunks, raw source documents, communities, and summaries.
 - Generic parameter: `T`, the value type stored under string IDs.
 - Important read methods:
   - `all_keys()`: list all stored keys.
@@ -273,7 +273,7 @@ with tempfile.TemporaryDirectory() as directory:
 
 JSON-backed KV adapter.
 
-- Purpose: local persistent dictionaries for chunks, communities, and summaries.
+- Purpose: local persistent dictionaries for chunks, raw source documents, communities, and summaries.
 
 ```python
 import asyncio

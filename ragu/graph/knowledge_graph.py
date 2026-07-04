@@ -17,6 +17,7 @@ from ragu.chunker.base_chunker import BaseChunker
 from ragu.chunker.types import Chunk
 from ragu.common.logger import logger
 from ragu.common.global_parameters import Settings
+from ragu.common.types import SourceDocument
 from ragu.graph.builder_modules import RemoveIsolatedNodes
 from ragu.graph.graph_builder_pipeline import (
     InMemoryGraphBuilder,
@@ -31,6 +32,7 @@ from ragu.graph.index import Index, StorageArguments
 from ragu.storage.types import ClusterInfo
 from ragu.triplet.base_artifact_extractor import BaseArtifactExtractor
 from ragu.storage.base_storage import EdgeSpec
+from ragu.utils.ragu_utils import compute_mdhash_id
 
 
 def _duplicate_ids(items: Iterable[Entity | Relation | CommunitySummary | Chunk | Community]) -> List[str]:
@@ -264,6 +266,10 @@ class KnowledgeGraph:
             [Chunk(doc, i, doc_id=f"doc_{i}") for i, doc in enumerate(docs)]
         logger.debug(f'Got {len(chunks)} chunks')
 
+        source_documents = self._source_documents_from_docs_and_chunks(docs, chunks)
+        if source_documents:
+            await self.index.upsert_documents(source_documents)
+
         chunks = await self._deduplicate_chunks_by_id(chunks)
         logger.debug(f'Got {len(chunks)} chunks after deduplicating')
 
@@ -457,6 +463,25 @@ class KnowledgeGraph:
         """
         return await self.index.get_chunks(chunk_ids)
 
+    async def upsert_documents(self, documents: List[SourceDocument]) -> "KnowledgeGraph":
+        """
+        Add or replace raw source documents by ``doc_id``.
+
+        :param documents: Source documents to upsert.
+        :return: Self for method chaining.
+        """
+        await self.index.upsert_documents(documents)
+        return self
+
+    async def get_documents_by_ids(self, doc_ids: List[str]) -> List[SourceDocument | None]:
+        """
+        Retrieve raw source documents by ID.
+
+        :param doc_ids: Source document identifiers.
+        :return: Source documents preserving input order; missing IDs are ``None``.
+        """
+        return await self.index.get_documents_by_ids(doc_ids)
+
     async def get_communities(self, community_ids: List[str]) -> List[Community | None]:
         """
         Retrieve one or more communities by ID in one batched operation.
@@ -612,6 +637,43 @@ class KnowledgeGraph:
             )
 
         return unique_chunks
+
+    def _source_documents_from_docs_and_chunks(
+        self,
+        docs: List[str],
+        chunks: List[Chunk],
+    ) -> List[SourceDocument]:
+        """
+        Build raw source-document records from input docs and produced chunks.
+
+        Existing bundled chunkers derive ``doc_id`` from the raw document hash,
+        while the no-chunker path uses ``doc_{index}``. A final positional
+        fallback is kept for custom chunkers that produce one unique doc_id per
+        input document.
+        """
+        if not docs or not chunks:
+            return []
+
+        chunk_doc_ids = list(dict.fromkeys(chunk.doc_id for chunk in chunks if chunk.doc_id))
+        chunk_doc_id_set = set(chunk_doc_ids)
+        source_documents: list[SourceDocument] = []
+        seen_doc_ids: set[str] = set()
+
+        for doc_index, content in enumerate(docs):
+            candidates = [
+                f"doc_{doc_index}",
+                compute_mdhash_id(content),
+            ]
+            doc_id = next((candidate for candidate in candidates if candidate in chunk_doc_id_set), None)
+            if doc_id is None and len(chunk_doc_ids) == len(docs):
+                doc_id = chunk_doc_ids[doc_index]
+            if not doc_id or doc_id in seen_doc_ids:
+                continue
+
+            seen_doc_ids.add(doc_id)
+            source_documents.append(SourceDocument(doc_id=doc_id, content=content))
+
+        return source_documents
 
     async def reindex_community(self) -> "KnowledgeGraph":
         """

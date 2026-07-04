@@ -54,7 +54,7 @@ print(retrieval.to_text())
 
 Generated answer container.
 
-- Purpose: carries `query`, `response`, `retrieval`, and optional `payload`.
+- Purpose: carries `query`, `response`, `retrieval`, and optional `payload`. When source documents are requested, `payload["source_documents"]` contains API-friendly dictionaries.
 
 ```python
 from ragu.search_engine.base_engine import SearchEngineResponse
@@ -70,6 +70,14 @@ response = SearchEngineResponse(
 print(str(response))
 ```
 
+### SourceDocument
+
+Raw document returned as a retrieval source.
+
+- Purpose: expose the original document text stored before chunking.
+- Important fields: `doc_id`, `content`, `metadata`.
+- Returned by: `NaiveSearchResult.source_documents` and `LocalSearchResult.source_documents` when `include_source_documents=True`.
+
 ### NaiveSearchEngine
 
 Chunk-vector RAG.
@@ -77,6 +85,7 @@ Chunk-vector RAG.
 - Purpose: retrieve chunk vectors directly, optionally rerank, then answer.
 - Best for: document QA when graph extraction is not needed.
 - Uses: `GraphRetriever.query_chunks`.
+- Optional source documents: pass `include_source_documents=True` to return raw documents referenced by the retrieved chunks.
 
 ```python
 from ragu import BuilderArguments, KnowledgeGraph, NaiveSearchEngine
@@ -104,6 +113,7 @@ Graph-neighborhood RAG.
 - Purpose: retrieve relevant entities, then collect related relations, chunks, and community summaries.
 - Best for: entity-centric questions and local factual neighborhoods.
 - Uses: entity vector DB, graph edges, chunk KV, community summary KV.
+- Optional source documents: pass `include_source_documents=True` to return raw documents referenced by the retrieved entity context.
 
 ```python
 from ragu import KnowledgeGraph, LocalSearchEngine
@@ -202,6 +212,7 @@ Output:
 
 - `SearchEngineRetrieve` from `a_search`
 - `SearchEngineResponse` from `a_query`
+- `SourceDocument` records in retrieval results and `SearchEngineResponse.payload["source_documents"]` when explicitly requested.
 
 Used by: applications that need GraphRAG answers, retrieval diagnostics, or mixed retrieval strategies.
 
@@ -237,8 +248,15 @@ async def main():
     await graph.build_from_docs(["Python is a programming language."])
 
     engine = NaiveSearchEngine(llm=llm, knowledge_graph=graph, embedder=embedder)
-    retrieval = await engine.a_search("What is Python?", top_k=1)
+    retrieval = await engine.a_search(
+        "What is Python?",
+        top_k=1,
+        include_source_documents=True,
+        source_documents_top_k=1,
+        source_document_max_chars=2_000,
+    )
     print(retrieval.result.chunks[0].content)
+    print(retrieval.result.source_documents[0].content)
 
 
 asyncio.run(main())
@@ -356,6 +374,9 @@ Retrieval parameters:
 - `top_k`: initial result count for local and naive search.
 - `rerank_top_k`: final chunk count for `NaiveSearchEngine` when a reranker is configured.
 - `use_summary` and `use_chunks`: toggles for `LocalSearchEngine.a_query`.
+- `include_source_documents`: return raw source documents for `NaiveSearchEngine` and `LocalSearchEngine`; defaults to `False`.
+- `source_documents_top_k`: optional limit for returned source documents.
+- `source_document_max_chars`: optional per-document content trim for API responses.
 - `allow_partial_failures`: controls `MixSearchEngine` child-engine failures.
 
 ## Dependencies

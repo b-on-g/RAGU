@@ -9,6 +9,7 @@ import numpy as np
 from ragu.chunker.types import Chunk
 from ragu.common.global_parameters import DEFAULT_FILENAMES
 from ragu.common.global_parameters import Settings
+from ragu.common.types import SourceDocument
 from ragu.graph.types import Community, CommunitySummary, Entity, Relation
 from ragu.models.embedder import Embedder
 from ragu.models.sparse_embedder import SparseEmbedder
@@ -30,9 +31,11 @@ class StorageArguments:
     Configuration for Index storage backends.
 
     :param graph_backend_storage: Storage backend class for graph structure (nodes/edges).
-    :param kv_storage_type: Storage backend class for key-value data (chunks, communities, summaries).
+    :param kv_storage_type: Storage backend class for key-value data
+        (chunks, source documents, communities, summaries).
     :param vdb_storage_type: Storage backend class for vector embeddings (entities, relations, chunks).
     :param chunks_kv_storage_kwargs: Additional kwargs passed to KV storage for text chunks.
+    :param documents_kv_storage_kwargs: Additional kwargs passed to KV storage for raw source documents.
     :param summary_kv_storage_kwargs: Additional kwargs passed to KV storage for community summaries.
     :param communities_kv_storage_kwargs: Additional kwargs passed to KV storage for community metadata.
     :param vdb_storage_kwargs: Additional kwargs passed to vector database instances.
@@ -43,6 +46,7 @@ class StorageArguments:
     vdb_storage_type: Type[BaseVectorStorage] = NanoVectorDBStorage
 
     chunks_kv_storage_kwargs: Dict[str, Any] = field(default_factory=dict[str, Any])
+    documents_kv_storage_kwargs: Dict[str, Any] = field(default_factory=dict[str, Any])
     summary_kv_storage_kwargs: Dict[str, Any] = field(default_factory=dict[str, Any])
     communities_kv_storage_kwargs: Dict[str, Any] = field(default_factory=dict[str, Any])
     vdb_storage_kwargs: Dict[str, Any] = field(default_factory=dict[str, Any])
@@ -146,6 +150,12 @@ class Index(Generic[NodeT, EdgeT]):
             DEFAULT_FILENAMES["chunks_kv_storage_name"],
             arguments.chunks_kv_storage_kwargs,
         )
+        documents_kv_kwargs = self._build_storage_kwargs(
+            storage_folder,
+            DEFAULT_FILENAMES["documents_kv_storage_name"],
+            arguments.documents_kv_storage_kwargs,
+        )
+        documents_kv_kwargs.setdefault("create_if_missing", False)
         nodes_vdb_kwargs = self._build_storage_kwargs(
             storage_folder,
             DEFAULT_FILENAMES["entity_vdb_name"],
@@ -169,6 +179,7 @@ class Index(Generic[NodeT, EdgeT]):
 
         # Key-value storages
         self.chunks_kv_storage = arguments.kv_storage_type(**chunks_kv_kwargs)
+        self.documents_kv_storage = arguments.kv_storage_type(**documents_kv_kwargs)
         self.community_summary_kv_storage = arguments.kv_storage_type(**summary_kv_kwargs)
         self.community_kv_storage = arguments.kv_storage_type(**community_kv_kwargs)
 
@@ -507,6 +518,40 @@ class Index(Generic[NodeT, EdgeT]):
         await self.chunks_kv_storage.index_done_callback()
         return self
 
+    async def upsert_documents(self, documents: List[SourceDocument]) -> "Index[NodeT, EdgeT]":
+        """
+        Insert or update raw source documents in document KV storage.
+
+        :param documents: Source documents to upsert.
+        :return: Self for method chaining.
+        :raises ValueError: If duplicate document IDs are provided in one request.
+        """
+        if not documents:
+            return self
+
+        documents_by_id: dict[str, SourceDocument] = {}
+        duplicate_ids: list[str] = []
+        for document in documents:
+            if not document.doc_id:
+                raise ValueError("Cannot insert source document without doc_id")
+            if document.doc_id in documents_by_id:
+                duplicate_ids.append(document.doc_id)
+                continue
+            documents_by_id[document.doc_id] = document
+
+        if duplicate_ids:
+            raise ValueError(f"Cannot insert duplicated source document IDs in one request: {duplicate_ids}")
+
+        await self.documents_kv_storage.upsert({
+            doc_id: {
+                "content": document.content,
+                "metadata": document.metadata,
+            }
+            for doc_id, document in documents_by_id.items()
+        })
+        await self.documents_kv_storage.index_done_callback()
+        return self
+
     async def upsert_communities(self, communities: List[Community]) -> "Index[NodeT, EdgeT]":
         """
         Insert or update communities into KV storage.
@@ -697,6 +742,27 @@ class Index(Generic[NodeT, EdgeT]):
                 result.append(None)
             else:
                 result.append(Chunk(**chunk_dict))
+        return result
+
+    async def get_documents_by_ids(self, doc_ids: List[str]) -> List[Optional[SourceDocument]]:
+        """
+        Retrieve raw source documents by their IDs.
+
+        :param doc_ids: Source document IDs to fetch.
+        :return: Source documents aligned with ``doc_ids``; missing IDs mapped to ``None``.
+        """
+        document_dicts = await self.documents_kv_storage.get_by_ids(doc_ids)
+        result: list[SourceDocument | None] = []
+        for doc_id, document_dict in zip(doc_ids, document_dicts):
+            if document_dict is None:
+                result.append(None)
+                continue
+
+            result.append(SourceDocument(
+                doc_id=doc_id,
+                content=str(document_dict.get("content", "")),
+                metadata=dict(document_dict.get("metadata", {})),
+            ))
         return result
 
     async def get_communities(self, community_ids: List[str]) -> List[Optional[Community]]:

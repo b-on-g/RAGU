@@ -37,6 +37,19 @@ class SimpleChunker(BaseChunker):
         if isinstance(documents, str):
             documents = [documents]
 
+        def split_long_text(text: str) -> list[str]:
+            if len(text) <= self.max_chunk_size:
+                return [text]
+
+            step = self.max_chunk_size
+            if 0 < self.overlap < self.max_chunk_size:
+                step -= self.overlap
+
+            return [
+                text[start:start + self.max_chunk_size]
+                for start in range(0, len(text), step)
+            ]
+
         all_chunks: list[Chunk] = []
         for doc_idx, document in enumerate(tqdm(documents, desc="Splitting documents")):
             sentences = [chunk.text for chunk in sentenize(document)]
@@ -59,8 +72,12 @@ class SimpleChunker(BaseChunker):
                     else:
                         current_chunk = sentence + " "
 
+                    if len(current_chunk) > self.max_chunk_size:
+                        chunks.extend(split_long_text(current_chunk.strip()))
+                        current_chunk = ""
+
             if current_chunk.strip():
-                chunks.append(current_chunk.strip())
+                chunks.extend(split_long_text(current_chunk.strip()))
 
             for i, text in enumerate(chunks):
                 all_chunks.append(

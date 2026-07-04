@@ -5,6 +5,8 @@ import time
 import openai
 import pytest
 from collections.abc import Generator
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from pydantic import BaseModel
 
 from ragu.common.logger import logger
@@ -76,6 +78,32 @@ async def test_embed_text_type(server: OpenAIMockServer) -> None:
     assert all(isinstance(v, float) for v in result)
 
 
+async def test_embed_text_requests_float_encoding() -> None:
+    embeddings_create = AsyncMock(
+        return_value=SimpleNamespace(
+            data=[SimpleNamespace(embedding=[0.1, 0.2])]
+        )
+    )
+    raw_client = SimpleNamespace(
+        embeddings=SimpleNamespace(create=embeddings_create)
+    )
+    client = CachedAsyncOpenAI(
+        client=raw_client,
+        retry_times_sec=None,
+        cache={},
+    )
+
+    result = await client.embed_text(model_name='mock', text='hello')
+
+    assert result == [0.1, 0.2]
+    embeddings_create.assert_awaited_once_with(
+        model='mock',
+        input='hello',
+        encoding_format='float',
+        timeout=60.0,
+    )
+
+
 async def test_score_type(server: OpenAIMockServer) -> None:
     # score must return a list of (int index, float score) tuples
     client = CachedAsyncOpenAI(base_url=server.base_url, api_key='mock')
@@ -84,6 +112,35 @@ async def test_score_type(server: OpenAIMockServer) -> None:
     for idx, sc in result:
         assert isinstance(idx, int)
         assert isinstance(sc, float)
+
+
+async def test_embed_texts_requests_float_encoding() -> None:
+    embeddings_create = AsyncMock(
+        return_value=SimpleNamespace(
+            data=[
+                SimpleNamespace(embedding=[0.1]),
+                SimpleNamespace(embedding=[0.2]),
+            ]
+        )
+    )
+    raw_client = SimpleNamespace(
+        embeddings=SimpleNamespace(create=embeddings_create)
+    )
+    client = CachedAsyncOpenAI(
+        client=raw_client,
+        retry_times_sec=None,
+        cache={},
+    )
+
+    result = await client.embed_texts(model_name='mock', texts=['a', 'b'])
+
+    assert result == [[0.1], [0.2]]
+    embeddings_create.assert_awaited_once_with(
+        model='mock',
+        input=['a', 'b'],
+        encoding_format='float',
+        timeout=60.0,
+    )
 
 
 async def test_chat_completion_str_type(server: OpenAIMockServer) -> None:

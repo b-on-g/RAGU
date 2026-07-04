@@ -70,8 +70,18 @@ class TestSimpleChunker:
         chunks = chunker.split(long_sentence)
 
         assert len(chunks) > 0
-        # The long sentence should be split somehow
+        assert all(len(chunk.content) <= 100 for chunk in chunks)
         assert any(len(chunk.content) > 0 for chunk in chunks)
+
+    def test_long_sentence_with_overlap_is_split(self):
+        long_sentence = "A" * 260
+        chunker = SimpleChunker(max_chunk_size=100, overlap=20)
+        chunks = chunker.split(long_sentence)
+
+        assert len(chunks) > 1
+        assert all(len(chunk.content) <= 100 for chunk in chunks)
+        for i in range(len(chunks) - 1):
+            assert chunks[i + 1].content.startswith(chunks[i].content[-20:])
 
     def test_chunk_ids_unique(self, sample_text_long):
         chunker = SimpleChunker(max_chunk_size=100, overlap=0)

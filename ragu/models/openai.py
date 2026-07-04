@@ -412,7 +412,10 @@ class CachedAsyncOpenAI(ResponseCachingMixin):
             {'timeout': self.embed_timeout} if self.embed_timeout is not None else {}
         )
         response = await self.client.embeddings.create(
-            model=model_name, input=text, **timeout_kwarg,
+            model=model_name,
+            input=text,
+            encoding_format="float",
+            **timeout_kwarg,
         )
         return response.data[0].embedding
 
@@ -442,7 +445,10 @@ class CachedAsyncOpenAI(ResponseCachingMixin):
             {'timeout': self.embed_timeout} if self.embed_timeout is not None else {}
         )
         response = await self.client.embeddings.create(
-            model=model_name, input=texts, **timeout_kwarg,
+            model=model_name,
+            input=texts,
+            encoding_format="float",
+            **timeout_kwarg,
         )
         return [item.embedding for item in response.data]
 

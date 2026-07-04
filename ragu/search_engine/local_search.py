@@ -1,5 +1,5 @@
 # Partially based on https://github.com/gusye1234/nano-graphrag/blob/main/nano_graphrag/
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing_extensions import override
 from textwrap import dedent
 from typing import Any, List, Literal
@@ -11,6 +11,7 @@ from ragu.common.global_parameters import Settings
 from ragu.common.logger import logger
 from ragu.common.prompts.messages import ChatMessages, render
 from ragu.common.prompts.prompt_storage import RAGUInstruction
+from ragu.common.types import SourceDocument
 from ragu.graph.graph_retrieve_backend import GraphRetriever
 from ragu.graph.knowledge_graph import KnowledgeGraph
 from ragu.graph.types import Entity, Relation
@@ -28,6 +29,7 @@ from ragu.search_engine.search_functional import (
     _find_most_related_text_unit_from_entities,
     _find_documents_id,
     _find_most_related_community_from_entities,
+    _load_source_documents,
     _rerank_items,
 )
 
@@ -46,6 +48,7 @@ class LocalSearchResult:
     summaries: list[Any] = field(default_factory=list)
     chunks: list[Chunk] = field(default_factory=list)
     documents_id: list[str] = field(default_factory=list)
+    source_documents: list[SourceDocument] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -160,12 +163,24 @@ class LocalSearchEngine(BaseEngine):
         self.language = language if language else Settings.language
 
     @override
-    async def a_search(self, query: str, top_k: int = 20, *args, **kwargs) -> LocalSearchRetrieve:
+    async def a_search(
+        self,
+        query: str,
+        top_k: int = 20,
+        include_source_documents: bool = False,
+        source_documents_top_k: int | None = None,
+        source_document_max_chars: int | None = None,
+        *args,
+        **kwargs,
+    ) -> LocalSearchRetrieve:
         """
         Retrieve local graph context for the given query.
 
         :param query: Input query string.
         :param top_k: Number of top entities to retrieve from the entity vector DB.
+        :param include_source_documents: Whether raw source documents are returned.
+        :param source_documents_top_k: Optional maximum number of source documents returned.
+        :param source_document_max_chars: Optional maximum characters per source document.
         :return: ``LocalSearchRetrieve`` containing graph-local context and
                  entity relevance metrics.
         """
@@ -214,6 +229,16 @@ class LocalSearchEngine(BaseEngine):
         )
 
         documents_id = await _find_documents_id(entities)
+        source_documents = (
+            await _load_source_documents(
+                self.knowledge_graph,
+                documents_id,
+                source_documents_top_k=source_documents_top_k,
+                source_document_max_chars=source_document_max_chars,
+            )
+            if include_source_documents
+            else []
+        )
 
         return LocalSearchRetrieve(
             query=query,
@@ -223,6 +248,7 @@ class LocalSearchEngine(BaseEngine):
                 summaries=summaries,
                 chunks=relevant_chunks,
                 documents_id=documents_id,
+                source_documents=source_documents,
             ),
             metrics={
                 "entities": [
@@ -243,7 +269,10 @@ class LocalSearchEngine(BaseEngine):
             query: str,
             top_k: int = 20,
             use_summary: bool = False,
-            use_chunks: bool = False
+            use_chunks: bool = False,
+            include_source_documents: bool = False,
+            source_documents_top_k: int | None = None,
+            source_document_max_chars: int | None = None,
     ) -> SearchEngineResponse:
         """
         Execute a local RAG query.
@@ -252,10 +281,19 @@ class LocalSearchEngine(BaseEngine):
         :param top_k: Number of entities to retrieve into context.
         :param use_summary: Whether community summaries are included in the generated context.
         :param use_chunks: Whether source chunks are included in the generated context.
+        :param include_source_documents: Whether raw source documents are returned in payload.
+        :param source_documents_top_k: Optional maximum number of source documents returned.
+        :param source_document_max_chars: Optional maximum characters per source document.
         :return: ``SearchEngineResponse`` containing the generated answer and
                  the ``LocalSearchRetrieve`` used as context.
         """
-        context: LocalSearchRetrieve = await self.a_search(query, top_k)
+        context: LocalSearchRetrieve = await self.a_search(
+            query,
+            top_k,
+            include_source_documents=include_source_documents,
+            source_documents_top_k=source_documents_top_k,
+            source_document_max_chars=source_document_max_chars,
+        )
 
         if not use_summary:
             context.result.summaries = []
@@ -277,9 +315,16 @@ class LocalSearchEngine(BaseEngine):
             output_schema=instruction.pydantic_model or str, # type: ignore
         ) # type: ignore
 
+        payload: dict[str, Any] = {}
+        if include_source_documents:
+            payload["source_documents"] = [
+                asdict(document)
+                for document in context.result.source_documents
+            ]
+
         return SearchEngineResponse(
             query=query,
             response=response,
             retrieval=context,
-            payload={}
+            payload=payload
         )

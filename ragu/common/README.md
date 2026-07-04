@@ -90,6 +90,26 @@ env = Env(
 print(env.llm_model_name)
 ```
 
+### SourceDocument
+
+Dataclass for raw documents stored before chunking.
+
+- Purpose: carry source text by stable `doc_id` for retrieval/source display.
+- Important fields: `doc_id`, `content`, `metadata`.
+- Used by: `KnowledgeGraph.upsert_documents()`, `Index.get_documents_by_ids()`, and optional `source_documents` fields in search results.
+
+```python
+from ragu.common.types import SourceDocument
+
+document = SourceDocument(
+    doc_id="doc-1",
+    content="Original document text.",
+    metadata={"path": "docs/example.txt"},
+)
+
+print(document.doc_id)
+```
+
 ### RaguGenerativeModule
 
 Base class for modules that own prompts.

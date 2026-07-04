@@ -343,6 +343,8 @@ It retrieves top-k relevant entities, then expands their neighborhoods:
 
 This structured context is used to answer the user’s query.
 
+If `include_source_documents=True`, `a_search()` and `a_query()` also return raw source documents referenced by the retrieved document IDs. These documents are exposed in `source_documents` and `SearchEngineResponse.payload["source_documents"]`; they are not appended to the LLM prompt context.
+
 ```python
 from ragu.search_engine import LocalSearchEngine
 
@@ -382,6 +384,8 @@ print(result.response)
 #### Naive Search
 
 Naive search is vector RAG over source chunks. It does not expand through graph neighborhoods; it retrieves relevant chunks from vector storage and uses them as context for the LLM.
+
+If `include_source_documents=True`, Naive search also returns the raw documents that produced the retrieved chunks. Use `source_documents_top_k` and `source_document_max_chars` to limit API response size.
 
 ```python
 from ragu.search_engine import NaiveSearchEngine

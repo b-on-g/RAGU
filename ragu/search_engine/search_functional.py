@@ -3,7 +3,9 @@
 from typing import Callable, List, TypeVar
 
 from ragu.chunker.types import Chunk
+from ragu.common.logger import logger
 from ragu.common.prompts.default_models import SubQuery
+from ragu.common.types import SourceDocument
 from ragu.graph.knowledge_graph import KnowledgeGraph
 from ragu.graph.types import Entity, Community, CommunitySummary, Relation
 from ragu.models.scorer import Scorer
@@ -125,11 +127,68 @@ async def _find_documents_id(entities: List[Entity]):
     """
     Collect unique document IDs referenced by the supplied entities.
     """
-    documents_set = set()
+    documents_id: list[str] = []
+    seen: set[str] = set()
     for entity in entities:
         if hasattr(entity, 'documents_id') and entity.documents_id:
-            documents_set.update(entity.documents_id)
-    return list(documents_set)
+            for doc_id in entity.documents_id:
+                if doc_id in seen:
+                    continue
+                seen.add(doc_id)
+                documents_id.append(doc_id)
+    return documents_id
+
+
+async def _load_source_documents(
+    knowledge_graph: KnowledgeGraph,
+    documents_id: list[str],
+    source_documents_top_k: int | None = None,
+    source_document_max_chars: int | None = None,
+) -> list[SourceDocument]:
+    """
+    Load source documents by ordered document IDs with optional limits.
+
+    :param knowledge_graph: Knowledge graph exposing document KV storage.
+    :param documents_id: Ordered source document identifiers.
+    :param source_documents_top_k: Optional maximum number of documents to return.
+    :param source_document_max_chars: Optional maximum returned content length.
+    :return: Source documents preserving first-seen order.
+    """
+    if source_documents_top_k is not None and source_documents_top_k < 0:
+        raise ValueError("source_documents_top_k must be non-negative or None")
+    if source_document_max_chars is not None and source_document_max_chars < 0:
+        raise ValueError("source_document_max_chars must be non-negative or None")
+
+    ordered_doc_ids = list(dict.fromkeys(doc_id for doc_id in documents_id if doc_id))
+    if source_documents_top_k is not None:
+        ordered_doc_ids = ordered_doc_ids[:source_documents_top_k]
+    if not ordered_doc_ids:
+        return []
+
+    documents = await knowledge_graph.get_documents_by_ids(ordered_doc_ids)
+    source_documents: list[SourceDocument] = []
+    for doc_id, document in zip(ordered_doc_ids, documents):
+        if document is None:
+            logger.warning("Source document '{}' is missing from doc-store.", doc_id)
+            continue
+
+        content = document.content
+        if source_document_max_chars is not None:
+            content = content[:source_document_max_chars]
+
+        source_documents.append(SourceDocument(
+            doc_id=document.doc_id,
+            content=content,
+            metadata=dict(document.metadata),
+        ))
+
+    logger.debug(
+        "Loaded source documents: requested={}, found={}, returned={}",
+        len(ordered_doc_ids),
+        sum(document is not None for document in documents),
+        len(source_documents),
+    )
+    return source_documents
 
 
 async def _find_most_related_community_from_entities(

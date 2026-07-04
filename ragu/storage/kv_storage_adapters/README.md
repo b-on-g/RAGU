@@ -2,7 +2,7 @@
 
 ## Role in RAGU Pipeline
 
-This package provides key-value storage for chunks, community metadata, and community summaries.
+This package provides key-value storage for chunks, raw source documents, community metadata, and community summaries.
 
 Pipeline position:
 
@@ -31,6 +31,7 @@ Output: ordered lookup results with `None` for missing IDs.
 Used by:
 
 - `Index.chunks_kv_storage`
+- `Index.documents_kv_storage`
 - `Index.community_kv_storage`
 - `Index.community_summary_kv_storage`
 - `GlobalSearchEngine`
@@ -92,9 +93,10 @@ graph = KnowledgeGraph(
 
 ## Configuration
 
-`StorageArguments` provides separate kwargs for chunks, communities, and summaries:
+`StorageArguments` provides separate kwargs for chunks, raw source documents, communities, and summaries:
 
 - `chunks_kv_storage_kwargs`
+- `documents_kv_storage_kwargs`
 - `communities_kv_storage_kwargs`
 - `summary_kv_storage_kwargs`
 

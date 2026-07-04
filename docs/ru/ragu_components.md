@@ -328,6 +328,8 @@ await knowledge_graph.build_from_docs(["Текстовый документ дл
 
 Все это подается как структурированный контекст для ответа на запрос пользователя.
 
+Если передать `include_source_documents=True`, `a_search()` и `a_query()` также вернут исходные документы, связанные с найденными `documents_id`. Они доступны в `source_documents` и `SearchEngineResponse.payload["source_documents"]`; в prompt-контекст LLM эти документы не добавляются.
+
 Пример использования:
 ```python
 from ragu.search_engine import LocalSearchEngine
@@ -375,6 +377,8 @@ print(response.response)
 #### Naive Search
 
 Naive search — это векторный RAG по исходным чанкам. Он не расширяет контекст через соседей в графе, а ищет релевантные чанки в векторном хранилище и передает их в LLM.
+
+Если передать `include_source_documents=True`, Naive search также вернет исходные документы, из которых были получены найденные чанки. Для ограничения размера ответа API используйте `source_documents_top_k` и `source_document_max_chars`.
 
 ```python
 from ragu.search_engine import NaiveSearchEngine
